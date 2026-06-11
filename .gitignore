@@ -1,0 +1,11 @@
+# Model weights — multi-GB HuggingFace cache, never commit
+cache/
+
+# Runtime logs + benchmark output
+logs/
+*.log
+bench-ctx-results.txt
+
+# Editor / OS cruft
+.DS_Store
+*.swp
