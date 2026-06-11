@@ -51,7 +51,7 @@ No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
 ## Quickstart
 
 ```bash
-git clone https://github.com/<you>/rtx5090-vllm.git
+git clone https://github.com/p4u/rtx5090-vllm.git
 cd rtx5090-vllm
 
 # 1. Pull the vLLM image (once).
@@ -251,12 +251,3 @@ populating `tool_calls`. Common parsers:
 5. Add the key + description to the `MODELS` array and `SERVED_ALIASES`.
 6. Add the repo to `DEFAULT_REPOS` in `download-model.sh`.
 7. Verify with `./test-all-models.sh <key>`.
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-vLLM, the models, and their quantizations are distributed under their own
-licenses; check each model's HuggingFace card before commercial use.
