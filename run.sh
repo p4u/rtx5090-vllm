@@ -39,7 +39,7 @@
 #   qwen36             35B/3B  MoE    NVFP4         196K    qwen3_coder   vision + reasoning, fastest decode
 #   qwen3-coder        30B/3B  MoE    AWQ 4-bit     221K    qwen3_coder   non-thinking coder specialist
 #   gemma4             26B/4B  MoE    AWQ 4-bit     262K    gemma4        text+tool, 86.4% τ²-bench (mm disabled)
-#   gemma4-text        27B dense      NVFP4         32K     gemma4        text-only Gemma4ForCausalLM, no mm overhead
+#   gemma4-coder       31B dense      NVFP4         262K    gemma4        ⭐ text-only coding daily-driver (alias: gemma4-text)
 #   gpt-oss            21B/3.6B MoE   MXFP4         131K    openai        fastest; Reasoning: low|medium|high
 #   nemotron3          31B/3B  MoE    NVFP4         224K    qwen3_coder   NVIDIA Omni, reasoning (mm disabled)
 #
@@ -51,7 +51,7 @@
 #   Coder tool-loop, predictable latency?   → qwen3-coder    (no thinking blocks)
 #   Strong reasoning + perfect tool-use?    → cascade2       (Mamba2+attn MoE)
 #   Gemma 4 text+tool+reasoning?            → gemma4         (MoE AWQ, mm disabled)
-#   Gemma 4 text-only, no mm overhead?      → gemma4-text    (dense NVFP4, 32K)
+#   Gemma 4 dense coding, long context?     → gemma4-coder   (dense NVFP4, 262K)
 #   OpenAI weights w/ reasoning dial?       → gpt-oss        ("Reasoning: high")
 #   NVIDIA Omni reasoning MoE?              → nemotron3      (NVFP4, 224K)
 #
@@ -91,7 +91,7 @@ CONTAINER_PORT=8000
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen36 qwen36-27b-nvfp4 qwen36-27b-awq qwen3-coder cascade2 gemma4 gemma4-text gpt-oss nemotron3
+  qwen36 qwen36-27b-nvfp4 qwen36-27b-awq qwen3-coder cascade2 gemma4 gemma4-text gemma4-coder gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -128,7 +128,7 @@ MODELS=(
   "qwen36|35B/3B MoE NVFP4 (RedHatAI), 196K, vision — newest Qwen flagship MoE, fastest capable decode"
   "qwen3-coder|30B/3B MoE AWQ (cyankiwi), 221K — non-thinking coder specialist, ~277 t/s"
   "gemma4|26B/4B MoE AWQ (cyankiwi), 262K — text+tool, mm disabled (86.4% τ²-bench)"
-  "gemma4-text|27B dense NVFP4 (LilaRest), 32K — text-only Gemma4ForCausalLM, no mm overhead"
+  "gemma4-coder|31B dense NVFP4 (LilaRest), 262K — ⭐ text-only coding daily-driver, no mm overhead"
   "gpt-oss|21B/3.6B MoE MXFP4 (openai), 131K — ⭐ OpenAI small, Reasoning: low/med/high"
   "nemotron3|31B/3B MoE NVFP4 (NVIDIA Omni), 224K — reasoning, mm disabled, text-only"
 )
@@ -335,17 +335,28 @@ select_model() {
       EXTRA_VOLS+=(-v "$SCRIPT_DIR/templates/gemma4-tool-template.jinja:/gemma4-tool-template.jinja")
       EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
       ;;
-    gemma4-text)
+    gemma4-text|gemma4-coder)
       # LilaRest/gemma-4-31B-it-NVFP4-turbo (~18.5 GB). Text-only fork of Gemma 4
-      # 27B dense: video + audio encoders stripped, uses Gemma4ForCausalLM (not
-      # ForConditionalGeneration) — avoids all multimodal profiling OOMs.
-      # ctx 32K: dense 62-layer architecture stores full KV on every layer
-      # (~480 KB/token at fp8). Far more KV-hungry than the MoE's sliding-window
-      # attention, so the context ceiling is much lower.
+      # 31B dense: video + audio encoders stripped, uses Gemma4ForCausalLM (not
+      # ForConditionalGeneration) — avoids all multimodal profiling OOMs. The
+      # strongest-reasoning Gemma 4 for the 5090 → the dense coding daily-driver.
+      # ctx 262K (full native): Gemma 4 interleaves attention 5:1 — only 10 of 60
+      # layers are full-attention (KV grows with context); the other 50 are
+      # sliding-window (capped at 1024 tokens, fixed KV). So long-context KV is
+      # ~80 KB/token at fp8 (the 10 global layers), NOT 480 KB/token — ~6x
+      # cheaper than a fully global model. With --max-num-seqs 1 the whole KV
+      # budget feeds one sequence; at util 0.975 the KV pool holds ~272K tokens,
+      # enough for the model's full 262144 ceiling (1.04x). Verified on the 5090:
+      # booted + a 200K-token needle-in-haystack prompt recalled correctly.
+      # util is 0.975, NOT 0.98: 0.98 grabs so much KV that the warmup forward
+      # pass OOMs (needs ~84 MiB free); 0.975 leaves room. If a driver/vLLM
+      # update tips it into warmup OOM, fall back to 0.97 + --max-model-len
+      # 245760 (~240K, comfortable margin).
       SNAPSHOT_REPO="LilaRest/gemma-4-31B-it-NVFP4-turbo"
       MODEL_ARGS=(
-        --max-model-len 32768
-        --gpu-memory-utilization 0.97
+        --max-model-len 262144
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.975
         --kv-cache-dtype fp8
         --enforce-eager
         --no-enable-prefix-caching

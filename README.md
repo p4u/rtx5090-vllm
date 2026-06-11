@@ -92,7 +92,7 @@ per-model rationale, or `./run.sh` for the interactive picker.
 | `qwen36`           | 35B/3B MoE    | NVFP4      | 196K       | ✓      | Newest Qwen flagship, fastest capable decode |
 | `qwen3-coder`      | 30B/3B MoE    | AWQ INT4   | 221K       | —      | Non-thinking coder specialist, ~277 t/s |
 | `gemma4`           | 26B/4B MoE    | AWQ INT4   | 262K       | —      | Google text+tool, 86.4% τ²-bench (mm disabled) |
-| `gemma4-text`      | 27B dense     | NVFP4      | 32K        | —      | Text-only Gemma 4, no multimodal overhead |
+| `gemma4-coder`     | 31B dense     | NVFP4      | 262K       | —      | ⭐ Text-only Gemma 4 coding daily-driver, no mm overhead (alias: `gemma4-text`) |
 | `gpt-oss`          | 21B/3.6B MoE  | MXFP4      | 131K       | —      | OpenAI open weights, `Reasoning: low/med/high` |
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
