@@ -1,0 +1,171 @@
+{
+  "providers": {
+    "vllm": {
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "local",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "qwen36-27b-awq",
+          "name": "Qwen3.6 27B AWQ-INT4 cyankiwi (vLLM) — 262K, ⭐ PREFERRED 27B, ~2x decode vs NVFP4, vision",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "qwen36-27b-nvfp4",
+          "name": "Qwen3.6 27B NVFP4 sakamakismile (vLLM) — 262K, Blackwell-native FP4, vision",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "cascade2",
+          "name": "Nemotron Cascade-2 30B-A3B NVFP4 chankhavu (vLLM) — 131K, Mamba2+attn MoE, perfect tool-use, LiveCodeBench 87.2, text-only",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 131072,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen36",
+          "name": "Qwen3.6 35B-A3B NVFP4 RedHatAI (vLLM) — 196K, MoE, fastest capable decode, vision",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 196608,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "qwen3-coder",
+          "name": "Qwen3-Coder 30B-A3B Instruct AWQ cyankiwi (vLLM) — 221K, non-thinking coder specialist, ~277 t/s, text-only",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 221184,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gemma4",
+          "name": "Gemma 4 26B-A4B AWQ-INT4 cyankiwi (vLLM) — 262K, MoE text+tool, 86.4% τ²-bench (mm disabled)",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gemma4-coder",
+          "name": "Gemma 4 31B dense NVFP4-turbo LilaRest (vLLM) — 262K, ⭐ text-only coding daily-driver, no mm overhead",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "gpt-oss",
+          "name": "OpenAI gpt-oss-20b MXFP4 (vLLM) — 131K, ~350-410 t/s (EAGLE3 spec), faithful tools, reasoning via 'Reasoning: low/med/high'",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 131072,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "nemotron3",
+          "name": "Nemotron-3 Nano Omni 31B-A3B NVFP4 NVIDIA (vLLM) — 224K, Mamba2, text-only (mm disabled), reasoning",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 229376,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    }
+  }
+}
