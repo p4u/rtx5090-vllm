@@ -378,10 +378,26 @@ select_model() {
       # 131K IS THE CEILING: config has rope_scaling YaRN factor=32 from a 4K
       # base — already at OpenAI's tested envelope. Pushing max-model-len higher
       # crashes the container with a CUDA device-side assert on long prompts.
+      # stock openai/gpt-oss-20b IS the optimal checkpoint for sm_120: weights
+      # are MXFP4-native; NVFP4 re-quants give nothing over it, BF16/GGUF are for
+      # other runtimes. Do NOT set VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1 — that
+      # TRT-LLM MXFP4xMXFP8 MoE kernel is B200/sm_100 only and FAILS to boot on
+      # the 5090 (sm_120); the default 'auto' MoE backend is correct.
+      # SPEED: EAGLE3 speculative decoding is a measured win at batch 1 — but
+      # only when tuned: num_speculative_tokens 3 (not 7) + --max-num-batched-
+      # tokens 8192 (the default cap of 2048 under spec throttles it). Verified
+      # on the 5090: ~293 t/s → ~352 prose / ~415 structured (1.2–1.4x), lossless
+      # (same outputs), tool-calling still faithful. num_speculative_tokens 7
+      # was SLOWER than no-spec (low accept rate + scheduler cap). The eagle3
+      # head (~0.3 GB) auto-downloads via SPECULATOR_REPO. If a vLLM/driver
+      # update breaks the drafter, drop --speculative-config to fall back clean.
       SNAPSHOT_REPO="openai/gpt-oss-20b"
+      SPECULATOR_REPO="RedHatAI/gpt-oss-20b-speculator.eagle3"
       MODEL_ARGS=(
         --max-model-len 131072
         --kv-cache-dtype auto
+        --max-num-batched-tokens 8192
+        --speculative-config '{"model":"RedHatAI/gpt-oss-20b-speculator.eagle3","num_speculative_tokens":3,"method":"eagle3"}'
         --enable-auto-tool-choice
         --tool-call-parser openai
         --reasoning-parser openai_gptoss
@@ -435,6 +451,7 @@ EXTRA_ENV=()
 EXTRA_VOLS=()
 MODEL_ARGS=()
 SNAPSHOT_REPO=""
+SPECULATOR_REPO=""   # optional EAGLE3/draft repo; downloaded to cache and resolved by id
 select_model "$target"
 
 # Always launch detached. Tolerate a leading `-d` for backward compat.
@@ -447,6 +464,10 @@ fi
 SNAPSHOT_HOST="$(resolve_snapshot "$SNAPSHOT_REPO")"
 SNAPSHOT_REL="${SNAPSHOT_HOST#$SCRIPT_DIR/cache/}"
 SNAPSHOT_CONTAINER="/root/.cache/huggingface/$SNAPSHOT_REL"
+
+# Speculative-decoding draft head (if the model sets one): ensure it's in the
+# mounted cache so vLLM resolves it by repo id offline, like the main weights.
+[[ -n "$SPECULATOR_REPO" ]] && resolve_snapshot "$SPECULATOR_REPO" >/dev/null
 
 # Stop any previous container first; only one binds the port.
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
