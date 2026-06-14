@@ -6,6 +6,9 @@ logs/
 *.log
 bench-ctx-results.txt
 
+# Local config / secrets (HF_TOKEN, bind settings) — never commit; see .env.example
+.env
+
 # Editor / OS cruft
 .DS_Store
 *.swp

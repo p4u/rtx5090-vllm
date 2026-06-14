@@ -76,6 +76,34 @@ curl http://localhost:8080/v1/chat/completions \
 
 > **Binding:** by default the server binds `0.0.0.0:8080` (reachable on your
 > LAN). For localhost-only, run `HOST_IP=127.0.0.1 ./run.sh <model>`.
+>
+> **Restrict to one network:** set `BIND_CIDR=<subnet>` and the published port
+> binds only to this host's address on that subnet, so vLLM is reachable only
+> from that network — e.g. a WireGuard VPN:
+>
+> ```bash
+> BIND_CIDR=10.200.0.0/24 ./run.sh gpt-oss   # binds to the host's 10.200.0.x addr only
+> ```
+>
+> `HOST_IP` (an explicit address) overrides `BIND_CIDR`. A socket binds a single
+> address, not a CIDR, so this restricts the **interface**, not the source IP —
+> for an isolated subnet/VPN that is the practical lock. For strict per-source
+> filtering, also add a firewall rule, e.g.:
+>
+> ```bash
+> sudo iptables -A INPUT -p tcp --dport 8080 ! -s 10.200.0.0/24 -j DROP
+> ```
+>
+> **Config via `.env`:** `run.sh` auto-sources a `.env` file in the repo root if
+> present, so you can persist `HOST_IP` / `HOST_PORT` / `BIND_CIDR` / `HF_TOKEN`
+> instead of typing them each run. Copy the template and edit:
+>
+> ```bash
+> cp .env.example .env      # then uncomment what you need
+> ```
+>
+> Real environment variables still override `.env` (e.g. `BIND_CIDR=… ./run.sh`).
+> `.env` is gitignored (it may hold `HF_TOKEN`); `.env.example` is committed.
 
 ---
 

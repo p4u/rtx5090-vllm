@@ -2,14 +2,14 @@
 
 One-click vLLM serving for the RTX 5090 (32 GB, Blackwell sm_120). `run.sh`
 launches a curated, hand-tuned model in a Docker container exposing an
-OpenAI-compatible API on `:8080`. `pi.models` is the model registry for the
+OpenAI-compatible API on `:8080`. `pi.models.json` is the model registry for the
 [pi coding agent](https://github.com/earendil-works/pi) so it can talk to that
 server.
 
 ## Repo layout
 
 - `run.sh` — the launcher. Per-model launch flags live in `select_model()`.
-- `pi.models` — pi coding agent model registry (`~/.pi/agent/models.json`
+- `pi.models.json` — pi coding agent model registry (`~/.pi/agent/models.json`
   format). **Must be kept in sync with the models in `run.sh`.**
 - `README.md` — user-facing lineup table + rationale.
 - `templates/` — chat templates bind-mounted into the container (Gemma 4).
@@ -71,7 +71,7 @@ case branch (e.g. `gemma4-text|gemma4-coder`).
 Add a row to the **Model lineup** table (`key | params | quant | ctx | vision |
 role`) and update the disk-footprint total if relevant.
 
-### 5. `pi.models` — REQUIRED, do not skip
+### 5. `pi.models.json` — REQUIRED, do not skip
 
 Add a model object under `providers.vllm.models`. This is what makes the model
 usable from the pi coding agent. **Keep it in lockstep with `run.sh`** — same
@@ -104,7 +104,7 @@ Field rules:
   provider-level `supportsDeveloperRole:false` / `supportsReasoningEffort:false`
   already cover vLLM's quirks.
 
-Validate after editing: `python3 -c "import json;json.load(open('pi.models'))"`.
+Validate after editing: `python3 -c "import json;json.load(open('pi.models.json'))"`.
 
 ## Verifying a model
 

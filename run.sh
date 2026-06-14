@@ -62,6 +62,10 @@
 #     ./run.sh qwen36 --gpu-memory-utilization 0.97
 #   Bind a different host IP/port (default 0.0.0.0:8080):
 #     HOST_IP=127.0.0.1 HOST_PORT=9090 ./run.sh gemma4
+#   Listen only on one network (binds to this host's address in that subnet):
+#     BIND_CIDR=10.200.0.0/24 ./run.sh gpt-oss
+#   Persist any of these in a .env file (auto-sourced); see .env.example:
+#     cp .env.example .env && $EDITOR .env
 #   Extra vllm args:
 #     ./run.sh qwen3-coder --max-num-seqs 64 --enable-chunked-prefill
 #
@@ -78,11 +82,56 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
+# Load local defaults from .env if present (simple KEY=value lines, optional
+# `export` prefix and # comments). Real environment variables take precedence,
+# so `BIND_CIDR=… ./run.sh` still overrides the file. See .env.example.
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line%$'\r'}"                          # tolerate CRLF
+    [[ "$_line" =~ ^[[:space:]]*(#|$) ]] && continue # skip comments / blanks
+    _line="${_line#export }"
+    [[ "$_line" == *=* ]] || continue
+    _key="${_line%%=*}"; _key="${_key//[[:space:]]/}"
+    [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!_key+x}" ]] && continue                # already set → env wins
+    _val="${_line#*=}"
+    _val="${_val%\"}"; _val="${_val#\"}"             # strip surrounding quotes
+    _val="${_val%\'}"; _val="${_val#\'}"
+    export "$_key=$_val"
+  done < "$SCRIPT_DIR/.env"
+  unset _line _key _val
+fi
+
 IMAGE="vllm/vllm-openai:latest"
 CONTAINER_NAME="vllm"
-HOST_IP="${HOST_IP:-0.0.0.0}"
 HOST_PORT="${HOST_PORT:-8080}"
 CONTAINER_PORT=8000
+
+# ─── Network binding ────────────────────────────────────────────────────────
+# By default the published port listens on every interface (0.0.0.0 — reachable
+# from any network that can route to this host). Two ways to lock it down:
+#   • HOST_IP=<addr>     — bind the published port to exactly that address
+#                          (e.g. HOST_IP=127.0.0.1 for localhost-only).
+#   • BIND_CIDR=<subnet> — restrict vLLM to a single network: run.sh finds THIS
+#                          host's IPv4 address inside the subnet and binds the
+#                          port only there, so the API is reachable only from
+#                          that network. E.g. BIND_CIDR=10.200.0.0/24 binds to
+#                          the wgN/VPN address and nothing else.
+# HOST_IP (if set) wins over BIND_CIDR. A socket binds one address, not a CIDR,
+# so this restricts the *interface*, not the source IP — for strict per-source
+# filtering add a firewall rule (see README). For an isolated subnet/VPN,
+# binding to its interface is the practical lock.
+if [[ -z "${HOST_IP:-}" && -n "${BIND_CIDR:-}" ]]; then
+  HOST_IP="$(ip -o -4 addr show to "$BIND_CIDR" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
+  if [[ -z "$HOST_IP" ]]; then
+    echo "run.sh: no local IPv4 address found within BIND_CIDR=$BIND_CIDR" >&2
+    echo "  this host's IPv4 interfaces:" >&2
+    ip -o -4 addr show 2>/dev/null | awk '{print "    "$2"\t"$4}' >&2
+    exit 1
+  fi
+  echo ">>> BIND_CIDR=$BIND_CIDR → binding published port to $HOST_IP only" >&2
+fi
+HOST_IP="${HOST_IP:-0.0.0.0}"
 
 # `--served-model-name` accepts multiple aliases — any of these names routes
 # to whatever model is actually loaded. Keeps clients working without
