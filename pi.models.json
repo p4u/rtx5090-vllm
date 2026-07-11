@@ -50,6 +50,44 @@
           }
         },
         {
+          "id": "qwen36-27b-unsloth",
+          "name": "Qwen3.6 27B NVFP4-dynamic unsloth (vLLM) — 262K, higher-quality NVFP4, mm off, text-only (needs vLLM>=0.24)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "qwen36-fast",
+          "name": "Qwen3.6 35B-A3B NVFP4-dynamic unsloth (vLLM) — 262K, full-ctx MoE, thinks heavily, mm off (needs vLLM>=0.24)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
           "id": "cascade2",
           "name": "Nemotron Cascade-2 30B-A3B NVFP4 chankhavu (vLLM) — 131K, Mamba2+attn MoE, perfect tool-use, LiveCodeBench 87.2, text-only",
           "reasoning": true,

@@ -29,12 +29,17 @@
 # Stop a running container with ./stop-vllm.sh (docker rm -f vllm).
 # Pull the latest image with ./update-vllm.sh.
 #
-# ─── Model lineup (measured on RTX 5090, vLLM 0.22.1) ───────────────────────
+# ─── Model lineup (measured on RTX 5090) ────────────────────────────────────
+# Image is vllm/vllm-openai:latest. The two unsloth qwen36 entries REQUIRE
+# vLLM >= 0.24 (quantized lm_head); the rest were first verified on 0.22.1 and
+# run on 0.24.x — re-check a model if its numbers look off after an image pull.
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
 #   qwen36-27b-awq     27B dense      AWQ 4-bit     262K    qwen3_xml     ⭐ PREFERRED 27B, 2x decode vs nvfp4
 #   qwen36-27b-nvfp4   27B dense      NVFP4         262K    qwen3_xml     Blackwell-native FP4
+#   qwen36-27b-unsloth 27B dense      NVFP4-dyn     262K    qwen3_xml     unsloth dynamic NVFP4, higher-q (mm off) [needs vLLM>=0.24]
+#   qwen36-fast        35B/3B  MoE    NVFP4-dyn     262K    qwen3_coder   unsloth 35B-A3B, thinks heavily (mm off) [needs vLLM>=0.24]
 #   cascade2           30B/3B  MoE    NVFP4         131K    qwen3_coder   ⭐ Mamba2+attn, perfect tool, LiveCB 87.2%
 #   qwen36             35B/3B  MoE    NVFP4         196K    qwen3_coder   vision + reasoning, fastest decode
 #   qwen3-coder        30B/3B  MoE    AWQ 4-bit     221K    qwen3_coder   non-thinking coder specialist
@@ -140,7 +145,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen36 qwen36-27b-nvfp4 qwen36-27b-awq qwen3-coder cascade2 gemma4 gemma4-text gemma4-coder gpt-oss nemotron3
+  qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-text gemma4-coder gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -173,6 +178,8 @@ usage() {
 MODELS=(
   "qwen36-27b-awq|27B dense AWQ-INT4 (cyankiwi), 262K — ⭐ PREFERRED 27B: best quality/token, 2x faster decode"
   "qwen36-27b-nvfp4|27B dense NVFP4 (sakamakismile), 262K — Blackwell-native FP4, 27B dense"
+  "qwen36-27b-unsloth|27B dense NVFP4-dynamic (unsloth), 262K — higher-quality NVFP4, mm off (needs vLLM>=0.24)"
+  "qwen36-fast|35B/3B MoE NVFP4-dynamic (unsloth), 262K — 35B-A3B, thinks heavily, mm off (needs vLLM>=0.24)"
   "cascade2|30B/3B MoE NVFP4 (chankhavu), 131K — ⭐ Mamba2+attn, perfect tool-use, LiveCodeBench 87.2%"
   "qwen36|35B/3B MoE NVFP4 (RedHatAI), 196K, vision — newest Qwen flagship MoE, fastest capable decode"
   "qwen3-coder|30B/3B MoE AWQ (cyankiwi), 221K — non-thinking coder specialist, ~277 t/s"
@@ -306,6 +313,62 @@ select_model() {
         --no-enable-prefix-caching
         --enable-auto-tool-choice
         --tool-call-parser qwen3_xml
+        --reasoning-parser qwen3
+      )
+      EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    qwen36-27b-unsloth)
+      # unsloth/Qwen3.6-27B-NVFP4 (~23.4 GB). Unsloth "dynamic" NVFP4 of the
+      # Qwen3.6-27B dense VL model — mixed-precision (keeps sensitive layers
+      # above 4-bit for quality), so ~3.7 GB heavier than the sakamakismile
+      # NVFP4. DeltaNet hybrid (only the full-attention layers grow KV).
+      # Vision disabled via --limit-mm-per-prompt: text-only focus, skips the
+      # encoder profiling, and frees memory for KV given the heavy weights.
+      # compressed-tensors → auto-detected (omit --quantization).
+      # REQUIRES vLLM >= 0.24: unsloth quantizes the lm_head (ships
+      # lm_head.weight_scale); vLLM 0.22.1's Qwen3_5 loader rejects that
+      # ("no parameter named lm_head.weight_scale"). Verified on 0.24.0.
+      # ctx 262K (full native): KV pool ~274K at 1.05x. Decode ~25 t/s — NVFP4
+      # dense trades speed for quality; the AWQ 27B is ~2x faster.
+      SNAPSHOT_REPO="unsloth/Qwen3.6-27B-NVFP4"
+      MODEL_ARGS=(
+        --max-model-len 262144
+        --max-num-batched-tokens 4096
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.95
+        --kv-cache-dtype fp8
+        --enforce-eager
+        --no-enable-prefix-caching
+        --limit-mm-per-prompt '{"image":0,"video":0}'
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_xml
+        --reasoning-parser qwen3
+      )
+      EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    qwen36-fast)
+      # unsloth/Qwen3.6-35B-A3B-NVFP4-Fast (~23.6 GB). Unsloth speed-tuned NVFP4
+      # of the Qwen3.6-35B-A3B MoE (256 experts / 8 active) VL model, mixed-
+      # precision. Same family as `qwen36` (RedHatAI) but ~1.4 GB lighter.
+      # DeltaNet hybrid MoE. Vision disabled for text-only + memory.
+      # compressed-tensors → auto-detected.
+      # REQUIRES vLLM >= 0.24 (same quantized-lm_head reason as the 27B).
+      # ctx 262K (full native): KV pool ~955K at 3.64x — DeltaNet MoE stores
+      # almost no KV, so context is free. Decode ~27 t/s (mixed-precision
+      # NVFP4). NOTE: thinks heavily — give tool loops a large max_tokens or the
+      # reasoning eats the budget before the tool call is emitted.
+      SNAPSHOT_REPO="unsloth/Qwen3.6-35B-A3B-NVFP4-Fast"
+      MODEL_ARGS=(
+        --max-model-len 262144
+        --max-num-batched-tokens 4096
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.95
+        --kv-cache-dtype fp8
+        --enforce-eager
+        --no-enable-prefix-caching
+        --limit-mm-per-prompt '{"image":0,"video":0}'
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_coder
         --reasoning-parser qwen3
       )
       EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")

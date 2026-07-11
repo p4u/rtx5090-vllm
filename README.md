@@ -116,8 +116,10 @@ per-model rationale, or `./run.sh` for the interactive picker.
 |--------------------|---------------|------------|------------|--------|------|
 | `qwen36-27b-awq`   | 27B dense     | AWQ INT4   | 262K       | —      | ⭐ Best coding quality/token, ~2× decode vs NVFP4 |
 | `qwen36-27b-nvfp4` | 27B dense     | NVFP4      | 262K       | —      | Same model, Blackwell-native FP4 path |
+| `qwen36-27b-unsloth`| 27B dense    | NVFP4-dyn  | 262K       | —      | unsloth dynamic NVFP4, higher-q/slower, mm off (needs vLLM ≥0.24) |
 | `cascade2`         | 30B/3B MoE    | NVFP4      | 131K       | —      | ⭐ Mamba2+attn, perfect tool-use, LiveCodeBench 87.2 |
 | `qwen36`           | 35B/3B MoE    | NVFP4      | 196K       | ✓      | Newest Qwen flagship, fastest capable decode |
+| `qwen36-fast`      | 35B/3B MoE    | NVFP4-dyn  | 262K       | —      | unsloth 35B-A3B, full ctx, thinks heavily, mm off (needs vLLM ≥0.24) |
 | `qwen3-coder`      | 30B/3B MoE    | AWQ INT4   | 221K       | —      | Non-thinking coder specialist, ~277 t/s |
 | `gemma4`           | 26B/4B MoE    | AWQ INT4   | 262K       | —      | Google text+tool, 86.4% τ²-bench (mm disabled) |
 | `gemma4-coder`     | 31B dense     | NVFP4      | 262K       | —      | ⭐ Text-only Gemma 4 coding daily-driver, no mm overhead (alias: `gemma4-text`) |
@@ -125,7 +127,9 @@ per-model rationale, or `./run.sh` for the interactive picker.
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
 `ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV.
-All values confirmed on vLLM 0.22.1.
+Most values were confirmed on vLLM 0.22.1; the two `unsloth` NVFP4-dynamic
+entries require vLLM ≥ 0.24 (they quantize the `lm_head`, which older loaders
+reject). The container tracks `vllm/vllm-openai:latest`.
 
 ### Picking one at a glance
 
