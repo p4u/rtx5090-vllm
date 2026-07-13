@@ -122,14 +122,16 @@ per-model rationale, or `./run.sh` for the interactive picker.
 | `qwen36-fast`      | 35B/3B MoE    | NVFP4-dyn  | 262K       | —      | unsloth 35B-A3B, full ctx, thinks heavily, mm off (needs vLLM ≥0.24) |
 | `qwen3-coder`      | 30B/3B MoE    | AWQ INT4   | 221K       | —      | Non-thinking coder specialist, ~277 t/s |
 | `gemma4`           | 26B/4B MoE    | AWQ INT4   | 262K       | —      | Google text+tool, 86.4% τ²-bench (mm disabled) |
-| `gemma4-coder`     | 31B dense     | NVFP4      | 262K       | —      | ⭐ Text-only Gemma 4 coding daily-driver, no mm overhead (alias: `gemma4-text`) |
+| `gemma4-vision`    | 31B dense+vis | NVFP4      | 128K       | ✓      | Vision+reasoning Gemma 4, 0.24+-compatible (unquantized lm_head), ~69 t/s |
 | `gpt-oss`          | 21B/3.6B MoE  | MXFP4      | 131K       | —      | OpenAI open weights, `Reasoning: low/med/high` |
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
 `ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV.
-Most values were confirmed on vLLM 0.22.1; the two `unsloth` NVFP4-dynamic
-entries require vLLM ≥ 0.24 (they quantize the `lm_head`, which older loaders
-reject). The container tracks `vllm/vllm-openai:latest`.
+The container tracks `vllm/vllm-openai:latest` (currently **0.25.1**). Most
+values were first confirmed on 0.22.1; the two `unsloth` NVFP4-dynamic entries
+require vLLM ≥ 0.24. The old LilaRest text-only Gemma 4 was **removed** — its
+quantized `lm_head` breaks on vLLM ≥ 0.24; `gemma4-vision` (unquantized head)
+replaces it and is verified on 0.25.1.
 
 ### Picking one at a glance
 

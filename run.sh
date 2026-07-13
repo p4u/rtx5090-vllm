@@ -30,9 +30,12 @@
 # Pull the latest image with ./update-vllm.sh.
 #
 # ─── Model lineup (measured on RTX 5090) ────────────────────────────────────
-# Image is vllm/vllm-openai:latest. The two unsloth qwen36 entries REQUIRE
-# vLLM >= 0.24 (quantized lm_head); the rest were first verified on 0.22.1 and
-# run on 0.24.x — re-check a model if its numbers look off after an image pull.
+# Image is vllm/vllm-openai:latest (currently 0.25.1). The two unsloth qwen36
+# entries REQUIRE vLLM >= 0.24 (quantized lm_head). NOTE: the LilaRest text-only
+# Gemma 4 (gemma4-coder) was REMOVED — its quantized lm_head breaks the gemma4.py
+# tie_weights() path on vLLM >= 0.24; gemma4-vision (unquantized lm_head) replaces
+# it. Other entries were first verified on 0.22.1 — re-check a model if its
+# numbers look off after an image pull.
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
@@ -44,7 +47,7 @@
 #   qwen36             35B/3B  MoE    NVFP4         196K    qwen3_coder   vision + reasoning, fastest decode
 #   qwen3-coder        30B/3B  MoE    AWQ 4-bit     221K    qwen3_coder   non-thinking coder specialist
 #   gemma4             26B/4B  MoE    AWQ 4-bit     262K    gemma4        text+tool, 86.4% τ²-bench (mm disabled)
-#   gemma4-coder       31B dense      NVFP4         262K    gemma4        ⭐ text-only coding daily-driver (alias: gemma4-text)
+#   gemma4-vision      31B dense+vis  NVFP4         128K    gemma4        vision+reasoning Gemma 4, ~69 t/s (verified 0.25.1)
 #   gpt-oss            21B/3.6B MoE   MXFP4         131K    openai        fastest; Reasoning: low|medium|high
 #   nemotron3          31B/3B  MoE    NVFP4         224K    qwen3_coder   NVIDIA Omni, reasoning (mm disabled)
 #
@@ -56,7 +59,7 @@
 #   Coder tool-loop, predictable latency?   → qwen3-coder    (no thinking blocks)
 #   Strong reasoning + perfect tool-use?    → cascade2       (Mamba2+attn MoE)
 #   Gemma 4 text+tool+reasoning?            → gemma4         (MoE AWQ, mm disabled)
-#   Gemma 4 dense coding, long context?     → gemma4-coder   (dense NVFP4, 262K)
+#   Gemma 4 dense + vision?                 → gemma4-vision  (dense NVFP4, 0.24+)
 #   OpenAI weights w/ reasoning dial?       → gpt-oss        ("Reasoning: high")
 #   NVIDIA Omni reasoning MoE?              → nemotron3      (NVFP4, 224K)
 #
@@ -145,7 +148,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-text gemma4-coder gpt-oss nemotron3
+  qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -184,7 +187,7 @@ MODELS=(
   "qwen36|35B/3B MoE NVFP4 (RedHatAI), 196K, vision — newest Qwen flagship MoE, fastest capable decode"
   "qwen3-coder|30B/3B MoE AWQ (cyankiwi), 221K — non-thinking coder specialist, ~277 t/s"
   "gemma4|26B/4B MoE AWQ (cyankiwi), 262K — text+tool, mm disabled (86.4% τ²-bench)"
-  "gemma4-coder|31B dense NVFP4 (LilaRest), 262K — ⭐ text-only coding daily-driver, no mm overhead"
+  "gemma4-vision|31B dense+vision NVFP4 (necroyancer), 128K — vision+reasoning Gemma4, ~69 t/s (verified 0.25.1)"
   "gpt-oss|21B/3.6B MoE MXFP4 (openai), 131K — ⭐ OpenAI small, Reasoning: low/med/high"
   "nemotron3|31B/3B MoE NVFP4 (NVIDIA Omni), 224K — reasoning, mm disabled, text-only"
 )
@@ -447,37 +450,35 @@ select_model() {
       EXTRA_VOLS+=(-v "$SCRIPT_DIR/templates/gemma4-tool-template.jinja:/gemma4-tool-template.jinja")
       EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
       ;;
-    gemma4-text|gemma4-coder)
-      # LilaRest/gemma-4-31B-it-NVFP4-turbo (~18.5 GB). Text-only fork of Gemma 4
-      # 31B dense: video + audio encoders stripped, uses Gemma4ForCausalLM (not
-      # ForConditionalGeneration) — avoids all multimodal profiling OOMs. The
-      # strongest-reasoning Gemma 4 for the 5090 → the dense coding daily-driver.
-      # ctx 262K (full native): Gemma 4 interleaves attention 5:1 — only 10 of 60
-      # layers are full-attention (KV grows with context); the other 50 are
-      # sliding-window (capped at 1024 tokens, fixed KV). So long-context KV is
-      # ~80 KB/token at fp8 (the 10 global layers), NOT 480 KB/token — ~6x
-      # cheaper than a fully global model. With --max-num-seqs 1 the whole KV
-      # budget feeds one sequence; at util 0.975 the KV pool holds ~272K tokens,
-      # enough for the model's full 262144 ceiling (1.04x). Verified on the 5090:
-      # booted + a 200K-token needle-in-haystack prompt recalled correctly.
-      # util is 0.975, NOT 0.98: 0.98 grabs so much KV that the warmup forward
-      # pass OOMs (needs ~84 MiB free); 0.975 leaves room. If a driver/vLLM
-      # update tips it into warmup OOM, fall back to 0.97 + --max-model-len
-      # 245760 (~240K, comfortable margin).
-      SNAPSHOT_REPO="LilaRest/gemma-4-31B-it-NVFP4-turbo"
+    gemma4-vision)
+      # necroyancer/gemma-4-31B-it-NVFP4-turbo-vision (~20.4 GB). NVFP4 (modelopt)
+      # of Gemma 4 31B dense WITH the vision tower (Gemma4ForConditionalGeneration).
+      # WHY THIS EXISTS: the earlier LilaRest text-only NVFP4 build (removed)
+      # BROKE on vLLM >= 0.24 — its quantized lm_head hits gemma4.py's
+      # tie_weights() which the modelopt quant method leaves NotImplemented.
+      # necroyancer keeps the lm_head UNQUANTIZED (it's in the quant `ignore`
+      # list), so tie_weights works → this is the 0.24+-compatible Gemma 4.
+      # Reasoning parser is ENABLED and WORKS on 0.25.1 (the SentencePiece
+      # unpickle bug that forced us to disable it on 0.22.1 is fixed). Vision is
+      # left ON (no --limit-mm-per-prompt) — the encoder does NOT OOM here.
+      # VERIFIED on the 5090 (vLLM 0.25.1): boots, coherent, faithful tool-calling,
+      # ~69 t/s decode (thinking off). ctx 128K: KV pool ~179K tokens at 131072
+      # (1.36x) — could push toward native 262144 with more util, vision keeps it
+      # a bit tighter. SPEED is capped ~69 t/s (dense 31B): CUDA graphs are on;
+      # FlashInfer attn is force-fallback'd to TRITON_ATTN (gemma4 sliding-window
+      # + fp8 KV); and EAGLE3 spec decoding is IMPRACTICAL here — the RedHatAI
+      # gemma-4-31B eagle3 draft is ~4.5 GB, which crushes KV to ~10K ctx on 32 GB
+      # (vs gpt-oss's 0.3 GB head). No spec draft that fits leaves room for ctx.
+      SNAPSHOT_REPO="necroyancer/gemma-4-31B-it-NVFP4-turbo-vision"
       MODEL_ARGS=(
-        --max-model-len 262144
-        --max-num-seqs 1
-        --gpu-memory-utilization 0.975
+        --quantization modelopt
+        --max-model-len 131072
         --kv-cache-dtype fp8
-        --enforce-eager
-        --no-enable-prefix-caching
         --enable-auto-tool-choice
         --tool-call-parser gemma4
-        # --reasoning-parser gemma4 DISABLED: same vLLM tokenizer bug as above.
-        --chat-template /gemma4-tool-template.jinja
+        --reasoning-parser gemma4
+        # prefix-caching, chunked-prefill, trust-remote-code come from COMMON_ARGS
       )
-      EXTRA_VOLS+=(-v "$SCRIPT_DIR/templates/gemma4-tool-template.jinja:/gemma4-tool-template.jinja")
       EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
       ;;
     gpt-oss)

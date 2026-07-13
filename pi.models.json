@@ -156,13 +156,14 @@
           }
         },
         {
-          "id": "gemma4-coder",
-          "name": "Gemma 4 31B dense NVFP4-turbo LilaRest (vLLM) — 262K, ⭐ text-only coding daily-driver, no mm overhead",
-          "reasoning": false,
+          "id": "gemma4-vision",
+          "name": "Gemma 4 31B dense+vision NVFP4 necroyancer (vLLM) — 128K, vision+reasoning, faithful tools, ~69 t/s (verified 0.25.1)",
+          "reasoning": true,
           "input": [
-            "text"
+            "text",
+            "image"
           ],
-          "contextWindow": 262144,
+          "contextWindow": 131072,
           "maxTokens": 32768,
           "cost": {
             "input": 0,
