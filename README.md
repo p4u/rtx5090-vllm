@@ -164,12 +164,38 @@ download-model.sh       # ./download-model.sh <user/repo> | --all
 stop-vllm.sh            # docker rm -f vllm
 update-vllm.sh          # docker pull vllm/vllm-openai:latest
 logs-vllm.sh            # docker logs -f --tail 200 vllm
+watchdog-vllm.sh        # restart the container if it hangs (schedule via cron/systemd)
 test-chat.sh            # one-shot chat completion against the server
 test-all-models.sh      # boot every model, health-check, completion, summarize
 bench-ctx.sh            # context-ceiling sweep across the lineup
 templates/              # chat templates mounted into the container (Gemma 4)
 cache/                  # downloaded weights (gitignored)
 ```
+
+### Resilience — keeping the served model up
+
+The container is launched to survive failure, not just to start:
+
+- **Restart on crash / reboot.** The container runs with `--restart unless-stopped`
+  (override with `RESTART_POLICY=...`). If vLLM exits — OOM, CUDA error, assert —
+  or the host reboots, Docker brings it back automatically (with exponential
+  backoff, so a genuinely broken config won't hammer the GPU). It stays down only
+  when you `./stop-vllm.sh` it. *Verified:* killing the engine process restarts the
+  container and it recovers to `healthy` on its own.
+- **Healthcheck.** Docker probes `/health` (`docker ps` shows `healthy`/`unhealthy`).
+  A long `--health-start-period` (5 min) avoids false alarms during slow model
+  loads + autotune warmup.
+- **Hang recovery.** Docker's restart policy only fires when the process *exits* —
+  a deadlocked-but-alive server never does. `watchdog-vllm.sh` closes that gap:
+  it restarts the container once it's been `unhealthy` for a couple of checks.
+  Schedule it (one-shot, don't loop):
+
+  ```bash
+  # cron — every minute
+  * * * * * /home/you/rtx5090-vllm/watchdog-vllm.sh >> /home/you/rtx5090-vllm/logs/watchdog.log 2>&1
+  ```
+
+  or a `systemd` `Type=oneshot` service driven by a `OnUnitActiveSec=60s` timer.
 
 ### Common overrides
 

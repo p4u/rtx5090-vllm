@@ -115,6 +115,21 @@ CONTAINER_NAME="vllm"
 HOST_PORT="${HOST_PORT:-8080}"
 CONTAINER_PORT=8000
 
+# ─── Resilience ─────────────────────────────────────────────────────────────
+# RESTART_POLICY governs what Docker does when the server process EXITS (crash,
+# OOM, CUDA error) or the host reboots. Default `unless-stopped`: bring the
+# model back after a crash and after a reboot, but stay down if you explicitly
+# ./stop-vllm.sh it. Docker applies exponential backoff, so a genuinely broken
+# config won't hammer the GPU. Set RESTART_POLICY=no while debugging a config
+# that won't boot, or on-failure:N to cap retries.
+RESTART_POLICY="${RESTART_POLICY:-unless-stopped}"
+# Container HEALTHCHECK: vLLM has no curl, so probe /health with python3. This
+# only marks the container healthy/unhealthy in `docker ps` — Docker does NOT
+# auto-restart on "unhealthy" (a hung-but-alive server never exits). Pair it
+# with ./watchdog-vllm.sh to restart on hangs. Long start-period so slow model
+# loads + FlashInfer autotune warmup don't get flagged mid-boot.
+HEALTHCHECK_CMD="python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:${CONTAINER_PORT}/health', timeout=5)\""
+
 # ─── Network binding ────────────────────────────────────────────────────────
 # By default the published port listens on every interface (0.0.0.0 — reachable
 # from any network that can route to this host). Two ways to lock it down:
@@ -596,12 +611,18 @@ RUN_ARGS=(
   -v "$SCRIPT_DIR/cache:/root/.cache/huggingface"
   -v "$SCRIPT_DIR/logs:/logs"
   -e "HF_HUB_CACHE=/root/.cache/huggingface"
+  --health-cmd "$HEALTHCHECK_CMD"
+  --health-interval 30s
+  --health-timeout 10s
+  --health-retries 3
+  --health-start-period 300s
   "${EXTRA_ENV[@]}"
   "${EXTRA_VOLS[@]}"
 )
 
-# Always detached. --restart no: if init fails, don't flap.
-RUN_ARGS+=(-d --restart no)
+# Always detached. Restart policy = resilience (survive crash + reboot); see
+# RESTART_POLICY above. Set RESTART_POLICY=no to debug a config that won't boot.
+RUN_ARGS+=(-d --restart "$RESTART_POLICY")
 
 display_ip="$HOST_IP"
 [[ "$display_ip" == "0.0.0.0" ]] && display_ip="localhost"
@@ -621,4 +642,6 @@ docker run "${RUN_ARGS[@]}" "$IMAGE" \
   "${MODEL_ARGS[@]}" \
   "$@"
 
+echo ">>> restart     : $RESTART_POLICY (survives crash + reboot; healthcheck on /health)"
 echo ">>> started detached — tail with ./logs-vllm.sh, stop with ./stop-vllm.sh"
+echo ">>> resilience  : for hang recovery, schedule ./watchdog-vllm.sh (see README)"
