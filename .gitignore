@@ -9,6 +9,12 @@ bench-ctx-results.txt
 # Local config / secrets (HF_TOKEN, bind settings) — never commit; see .env.example
 .env
 
+# Web UI runtime state (API token, per-model overrides, launch log) — never commit
+ui/data/
+
 # Editor / OS cruft
 .DS_Store
 *.swp
+
+# Python bytecode (UI app runs from the mounted repo)
+__pycache__/

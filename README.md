@@ -107,6 +107,69 @@ curl http://localhost:8080/v1/chat/completions \
 
 ---
 
+## Web UI
+
+A dockerized management UI + authenticated API gateway. Switch models with a
+click, tune launch flags, watch live vLLM metrics/logs/GPU stats, and gate the
+OpenAI API behind a bearer token.
+
+```bash
+# .env: set UI_PASSWORD=... (required), optionally UI_HOST / UI_PORT
+./run-ui.sh                  # builds + starts the vllm-ui container
+# open http://<host>:8090/  → log in with UI_PASSWORD
+```
+
+What it does:
+
+- **Model switching** — every model in the lineup as a card; Start/Stop/switch
+  with a confirmation. Boot progress is streamed (download → load → ready),
+  and crash-loops from bad overrides are detected and surfaced.
+- **Model details** — per-model override form (`--max-model-len`,
+  `--gpu-memory-utilization`, `--max-num-seqs`, `--max-num-batched-tokens`,
+  `--kv-cache-dtype`, free-form extra args). Overrides are appended after the
+  verified per-model flags (last-wins), persisted across restarts, and never
+  written back into `run.sh`. A reset button returns to the verified defaults.
+- **Runtime dashboard** — parsed vLLM `/metrics` (tokens/s, KV-cache usage,
+  running/waiting requests, TTFT, spec-decode acceptance), the effective launch
+  flags of the live container, `nvidia-smi` GPU stats, and a follow-mode log
+  panel.
+- **API access panel** — a single bearer token for the OpenAI API, with
+  show/copy/**renew** (renewing invalidates the old token instantly).
+- **Chat tab** — a ChatGPT-style chat with whatever model is running:
+  streamed responses with markdown rendering, collapsible reasoning for
+  thinking models, multiple conversations (kept in your browser's
+  localStorage), a system-prompt/temperature/max-tokens panel, stoppable
+  generation, and file uploads — text files are inlined into the message as
+  fenced code blocks; images are sent as vision input when the running model
+  supports it.
+
+**Security model.** The UI is password-gated (`UI_PASSWORD`). The UI also
+serves the OpenAI API at `http://<host>:8090/v1` as a reverse proxy that
+requires `Authorization: Bearer <token>`. Models launched *from the UI* are
+bound to `127.0.0.1` (the raw, tokenless vLLM port is not reachable from the
+network) — the token-checked proxy is the only LAN entrance:
+
+```bash
+curl http://<host>:8090/v1/chat/completions \
+  -H "Authorization: Bearer <token from the UI>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"hi"}]}'
+```
+
+Manual `./run.sh` from a shell keeps its own binding behavior (`HOST_IP` /
+`BIND_CIDR`) — the UI detects and manages externally-launched containers too,
+whatever address they bound. There is **no TLS**: password and token travel in
+plaintext, so front the UI with a VPN (WireGuard) or a TLS reverse proxy
+before exposing it beyond a trusted network. `pi.models.json` ships pointed at
+the proxy (`:8090/v1`) — paste your token into its `apiKey`.
+
+How it runs: the `vllm-ui` container mounts the docker socket and the repo (at
+its identical host path) and drives `./run.sh` — the hand-tuned launch configs
+stay the single source of truth. `./stop-ui.sh` / `./logs-ui.sh` manage it; the
+UI's own state (token, overrides) lives in `ui/data/` (gitignored).
+
+---
+
 ## Model lineup
 
 Nine models, each filling a specific role. Run `./run.sh --help` for the full
@@ -158,7 +221,19 @@ replaces it and is verified on 0.25.1.
 - Per-model launch flags live in `select_model()` in `run.sh`. They are
   measured fits for 32 GB — read the inline comments before changing them.
 
+Every command is also wrapped by the `Makefile` — run `make` (or `make help`)
+for the full target list:
+
+```bash
+make run MODEL=gpt-oss ARGS="--max-model-len 65536"   # = ./run.sh gpt-oss ...
+make list | make stop | make logs | make status
+make test-chat PROMPT="Write a haiku"
+make download REPO=user/repo | make download-all
+make ui | make ui-stop | make ui-logs
 ```
+
+```
+Makefile                # make help — wraps every script below as a target
 run.sh                  # main launcher: ./run.sh (picker) | ./run.sh <model> [args]
 download-model.sh       # ./download-model.sh <user/repo> | --all
 stop-vllm.sh            # docker rm -f vllm
@@ -168,6 +243,9 @@ watchdog-vllm.sh        # restart the container if it hangs (schedule via cron/s
 test-chat.sh            # one-shot chat completion against the server
 test-all-models.sh      # boot every model, health-check, completion, summarize
 bench-ctx.sh            # context-ceiling sweep across the lineup
+run-ui.sh               # web UI + token-gated API proxy (see "Web UI" above)
+stop-ui.sh, logs-ui.sh  # manage the vllm-ui container
+ui/                     # the UI app (FastAPI + vanilla JS, runs in Docker)
 templates/              # chat templates mounted into the container (Gemma 4)
 cache/                  # downloaded weights (gitignored)
 ```

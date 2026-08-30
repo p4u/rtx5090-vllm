@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vllm-ui · RTX 5090</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- login overlay -->
+<div id="login" class="login-overlay" hidden>
+  <form id="login-form" class="login-box">
+    <h1>vllm-ui</h1>
+    <p class="muted">RTX 5090 · vLLM model manager</p>
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" autofocus>
+    <button type="submit">Sign in</button>
+    <p id="login-error" class="error" hidden>Wrong password</p>
+  </form>
+</div>
+
+<div id="main" hidden>
+  <div class="topbar">
+    <header>
+      <div class="brand">vllm<span class="brand-dim">-ui</span> <span class="brand-tag">RTX 5090</span></div>
+      <nav class="tabs">
+        <button id="tab-btn-manage" class="tab active">Manage</button>
+        <button id="tab-btn-chat" class="tab">Chat</button>
+      </nav>
+      <div id="status-pill" class="pill pill-off">no model</div>
+      <div class="spacer"></div>
+      <div id="vram-readout" class="vram-readout" title="GPU memory">VRAM —</div>
+      <button id="stop-btn" class="btn danger" hidden>Stop model</button>
+      <button id="logout-btn" class="btn ghost">Logout</button>
+    </header>
+    <!-- the 32 GB budget line: everything this repo does is fitting into this bar -->
+    <div class="vram-strip" role="meter" aria-label="VRAM used">
+      <div id="vram-fill" class="vram-fill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- launch progress banner -->
+  <div id="launch-banner" class="banner" hidden>
+    <div class="banner-head">
+      <span id="launch-phase" class="pill pill-busy">loading</span>
+      <span id="launch-title"></span>
+      <span id="launch-elapsed" class="muted"></span>
+    </div>
+    <pre id="launch-log" class="log small"></pre>
+  </div>
+
+  <main id="tab-manage">
+    <section>
+      <h2>Models</h2>
+      <div id="model-grid" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Runtime</h2>
+      <div id="runtime-empty" class="muted">No model running — metrics appear here once one is up.</div>
+      <div id="runtime" hidden>
+        <div class="tiles" id="tiles"></div>
+        <div class="cols">
+          <div class="card">
+            <h3>GPU</h3>
+            <div id="gpu-body" class="kv"></div>
+          </div>
+          <div class="card">
+            <h3>Effective launch flags</h3>
+            <div id="flags-body" class="kv small"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row">
+            <h3>Logs</h3>
+            <div class="spacer"></div>
+            <button id="follow-btn" class="btn ghost small-btn">Follow</button>
+          </div>
+          <pre id="log-panel" class="log"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>API access</h2>
+      <div class="card">
+        <p>Single bearer token for the OpenAI-compatible API at
+          <code id="api-url"></code>. Renewing invalidates the old token immediately.</p>
+        <div class="row token-row">
+          <code id="token-value" class="token">••••••••••••••••••••</code>
+          <button id="token-show" class="btn ghost small-btn">Show</button>
+          <button id="token-copy" class="btn small-btn">Copy</button>
+          <button id="token-renew" class="btn danger small-btn">Renew</button>
+        </div>
+        <pre class="log small" id="curl-example"></pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- chat tab -->
+  <div id="tab-chat" class="chat-layout" hidden>
+    <aside class="chat-side">
+      <button id="new-chat-btn" class="btn">New chat</button>
+      <div id="conv-list" class="conv-list"></div>
+    </aside>
+    <div class="chat-main">
+      <div id="chat-empty" class="chat-empty">
+        <h2 id="chat-model-name">No model running</h2>
+        <p class="muted">Messages go to whatever model is currently served
+          (as <code>default</code>). Attach text files to inline them, or
+          images for vision models.</p>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div class="composer">
+        <div id="attach-list" class="attach-list"></div>
+        <div class="composer-row">
+          <button id="attach-btn" class="btn ghost" title="Attach files">+</button>
+          <input id="file-input" type="file" multiple hidden>
+          <textarea id="chat-input" rows="1"
+            placeholder="Message the model… (Enter to send, Shift+Enter for newline)"></textarea>
+          <button id="send-btn" class="btn">Send</button>
+          <button id="stop-gen-btn" class="btn danger" hidden>Stop</button>
+        </div>
+        <details class="chat-settings">
+          <summary class="muted">Settings</summary>
+          <div class="field"><label>System prompt</label>
+            <input id="set-system" type="text" placeholder="(none)"></div>
+          <div class="field"><label>Temperature</label>
+            <input id="set-temperature" type="number" step="0.1" min="0" max="2" placeholder="0.7"></div>
+          <div class="field"><label>Max tokens</label>
+            <input id="set-max-tokens" type="number" step="1" min="1" placeholder="8192"></div>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

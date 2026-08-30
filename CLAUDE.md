@@ -1,20 +1,56 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 One-click vLLM serving for the RTX 5090 (32 GB, Blackwell sm_120). `run.sh`
 launches a curated, hand-tuned model in a Docker container exposing an
 OpenAI-compatible API on `:8080`. `pi.models.json` is the model registry for the
 [pi coding agent](https://github.com/earendil-works/pi) so it can talk to that
 server.
 
-## Repo layout
+There is no build, no test suite, no linter — this repo is bash + JSON config.
+"Testing" means booting a model on the real GPU and hitting it with a request.
 
-- `run.sh` — the launcher. Per-model launch flags live in `select_model()`.
-- `pi.models.json` — pi coding agent model registry (`~/.pi/agent/models.json`
-  format). **Must be kept in sync with the models in `run.sh`.**
-- `README.md` — user-facing lineup table + rationale.
-- `templates/` — chat templates bind-mounted into the container (Gemma 4).
-- `download-model.sh`, `stop-vllm.sh`, `update-vllm.sh`, `logs-vllm.sh`,
-  `test-chat.sh`, `test-all-models.sh`, `bench-ctx.sh` — helpers.
+## Commands
+
+Every command below also has a `Makefile` target (`make help` lists them; e.g.
+`make run MODEL=<key> ARGS="…"`, `make status`, `make ui`). The Makefile is a
+thin wrapper — the scripts stay the source of truth, so a new script or flag
+means adding a matching target.
+
+```bash
+./update-vllm.sh                     # docker pull vllm/vllm-openai:latest
+./run.sh                             # interactive picker
+./run.sh <key> [extra vllm args]     # boot detached; downloads weights if missing
+./run.sh --list                      # keys + descriptions
+./run.sh -h                          # prints the leading comment block of run.sh
+./logs-vllm.sh                       # docker logs -f --tail 200 vllm
+./stop-vllm.sh                       # docker rm -f vllm
+./test-chat.sh "prompt"              # one-shot chat completion against :8080
+./test-all-models.sh [key ...]       # boot → health → completion → stop, per model
+./bench-ctx.sh [key ...]             # context-ceiling sweep → bench-ctx-results.txt
+./download-model.sh <user/repo>      # or --all for DEFAULT_REPOS
+./watchdog-vllm.sh                   # one-shot hang recovery; schedule via cron/timer
+docker ps                            # healthy/unhealthy state of the `vllm` container
+./run-ui.sh                          # web UI + token-gated OpenAI proxy on :8090
+./stop-ui.sh | ./logs-ui.sh          # manage the vllm-ui container
+```
+
+Single-model verification (the closest thing to "running one test"):
+
+```bash
+./run.sh <key> && ./logs-vllm.sh     # wait for "Application startup complete";
+                                     #   note "GPU KV cache size: N tokens" — N must be
+                                     #   >= --max-model-len or it won't serve that ctx
+./test-chat.sh "Write a haiku"       # output must be coherent, not garbage
+./stop-vllm.sh
+```
+
+`./test-all-models.sh <key>` does that whole cycle unattended for one key.
+For a context-ceiling check, send a prompt near `--max-model-len` and confirm it
+doesn't OOM *and* recalls content (needle-in-haystack), not just that it boots.
+
+Validate JSON after editing: `python3 -c "import json;json.load(open('pi.models.json'))"`.
 
 ## Golden rule
 
@@ -23,6 +59,68 @@ server.
 did not OOM." Never invent a context size, util, or quant flag from a model
 card alone — boot it and confirm. If you change a flag, re-test before
 committing.
+
+## Architecture
+
+Everything lives in `run.sh` (~650 lines). The flow, top to bottom:
+
+1. **`.env` sourcing** — simple `KEY=value` lines, real env vars win. Holds
+   `HOST_IP` / `HOST_PORT` / `BIND_CIDR` / `HF_TOKEN` / `RESTART_POLICY`.
+2. **Network binding** — `BIND_CIDR` resolves *this host's* IPv4 inside that
+   subnet and publishes the port only there (interface lock, not source
+   filtering). `HOST_IP` overrides it. Default `0.0.0.0`.
+3. **`SERVED_ALIASES`** — every model key plus generic placeholders (`default`,
+   `gpt-4`, `llama`, `claude`, …) passed to `--served-model-name`, so any client
+   model ID resolves to whatever is currently loaded.
+4. **`COMMON_ARGS`** — shared defaults (util 0.92, chunked prefill, prefix
+   caching on, `--max-num-seqs 64`).
+5. **`MODELS`** — the picker list; its order is the interactive numbering.
+6. **`select_model()`** — the heart of the repo. One `case <key>)` branch per
+   model sets `SNAPSHOT_REPO`, `MODEL_ARGS`, and optionally `EXTRA_ENV`,
+   `EXTRA_VOLS`, `SPECULATOR_REPO` (an EAGLE3 draft head, resolved into cache
+   like the main weights — see `gpt-oss`). Each branch carries a dense comment
+   encoding the VRAM math and OOM boundaries.
+7. **`resolve_snapshot()`** — maps `user/repo` → `cache/models--user--repo/snapshots/<rev>/`,
+   auto-invoking `download-model.sh` on a miss. The whole `cache/` tree is
+   bind-mounted (snapshots symlink into `blobs/`, so mounting one snapshot dir
+   breaks).
+8. **`docker run`** — detached, `--restart unless-stopped`, `/health` healthcheck
+   with a 300s start period. Arg order is `COMMON_ARGS` → `MODEL_ARGS` → `"$@"`;
+   vLLM's argparse is **last-wins**, so your CLI args override everything.
+
+Resilience is layered: Docker's restart policy covers *exits* (crash, OOM,
+reboot); the healthcheck only labels a hung-but-alive server `unhealthy`;
+`watchdog-vllm.sh` is what actually restarts on a hang, and must be scheduled
+externally (cron / systemd timer) — it is one-shot by design, do not loop it.
+
+### Web UI (`ui/`)
+
+FastAPI app + vanilla-JS frontend, run by `run-ui.sh` as container `vllm-ui`
+(`--network host`, docker socket + repo mounted at its identical host path,
+non-root). Password gate = `UI_PASSWORD` env; the OpenAI API is re-served at
+`:8090/v1` behind a single bearer token (state in `ui/data/state.json`,
+gitignored). The image is code-free (deps + docker CLI only) — the app runs
+from the mounted `ui/`, so it can't drift from `run.sh` across rebuilds; a
+`docker restart vllm-ui` picks up code changes, no rebuild needed. The Chat
+tab talks to the running model through session-gated `/api/chat` (the browser
+never sees the bearer token); conversations live in browser localStorage.
+
+Key contracts to preserve when editing:
+
+- The UI **executes `./run.sh <key> [overrides]`** (with `HOST_IP=127.0.0.1`
+  forced, so UI-launched models bind loopback and the token actually gates).
+  It never re-implements launch flags.
+- `ui/vllm_mgr.py` **structurally parses `run.sh`**: `select_model()`'s
+  `key)` labels, `SNAPSHOT_REPO="…"`, `MODEL_ARGS=( … )`, plus `COMMON_ARGS`
+  and `./run.sh --list`. Keep that layout, or fix the parser in the same
+  change. It also merges metadata from `pi.models.json` by key.
+- `run.sh` stamps `--label "vllm.model-key=$target"` on the container — the
+  UI's primary way to know what's loaded (`/v1/models` can't tell: it always
+  returns the full `SERVED_ALIASES` list). Snapshot-path fallback covers
+  pre-label containers.
+- The proxy derives the upstream address from `docker inspect vllm`
+  (PortBindings, `0.0.0.0`→`127.0.0.1`), so it also serves models launched
+  manually, wherever they bound.
 
 ## Adding a new model
 
@@ -104,24 +202,25 @@ Field rules:
   provider-level `supportsDeveloperRole:false` / `supportsReasoningEffort:false`
   already cover vLLM's quirks.
 
-Validate after editing: `python3 -c "import json;json.load(open('pi.models.json'))"`.
+### Helper scripts carry their own model lists — and they drift
 
-## Verifying a model
+Three helpers duplicate the lineup and are **currently stale** (they still list
+the removed `gemma4-text` and are missing `qwen36-27b-unsloth`, `qwen36-fast`,
+`gemma4-vision`). Update them alongside the five above, or fix the drift when
+you touch them:
 
-```bash
-./run.sh <key>                 # boots detached, downloads weights if missing
-./logs-vllm.sh                 # watch for "Application startup complete"; note the
-                               #   "GPU KV cache size: N tokens" line — N must be
-                               #   >= your --max-model-len or it won't boot
-./test-chat.sh "Write a haiku" # smoke test; check output is coherent, not garbage
-./stop-vllm.sh
-```
-
-For a context-ceiling check, send a prompt near `--max-model-len` and confirm it
-doesn't OOM and recalls content (needle-in-haystack), not just that it boots.
+- `download-model.sh` → `DEFAULT_REPOS` (drives `--all`; a missing entry means
+  `--all` silently skips that model, though `run.sh` still auto-downloads it).
+- `test-all-models.sh` → `ALL_MODELS`.
+- `bench-ctx.sh` → `ALL_MODELS` (entries are `key|target_ctx|notes`, and
+  `target_ctx` must match `--max-model-len` in `run.sh`).
 
 ## Conventions
 
 - Commit only when asked. Match the existing author (`Pau <pau@dabax.net>`).
 - Keep comments in `run.sh` dense and specific — they encode hard-won OOM
   boundaries; do not trim them to "clean up."
+- The container tracks `vllm/vllm-openai:latest`. Flags can break across vLLM
+  releases (the `unsloth` NVFP4-dynamic entries need ≥0.24; a quantized
+  `lm_head` broke the old Gemma 4 text model on ≥0.24). Note the verified vLLM
+  version in the comment when a model is version-sensitive.

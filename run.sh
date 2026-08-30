@@ -604,6 +604,10 @@ mkdir -p "$SCRIPT_DIR/logs"
 
 RUN_ARGS=(
   --name "$CONTAINER_NAME"
+  # Record which lineup key launched this container. vLLM never sees it; the
+  # web UI (ui/) reads it via `docker inspect` to know what's running, since
+  # /v1/models always reports the full SERVED_ALIASES list.
+  --label "vllm.model-key=$target"
   --runtime nvidia
   --gpus all
   --ipc host
