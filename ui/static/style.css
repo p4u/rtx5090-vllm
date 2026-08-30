@@ -37,7 +37,7 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  --topbar-h: 52px;
+  --topbar-h: 69px;
 }
 
 * { box-sizing: border-box; }
@@ -135,34 +135,37 @@ button:disabled { opacity: .4; cursor: default; }
 /* ─── topbar + the VRAM budget line ─── */
 .topbar { position: sticky; top: 0; z-index: 5; }
 header {
-  display: flex; align-items: center; gap: 14px;
-  height: calc(var(--topbar-h) - 4px);
-  padding: 0 20px;
+  display: flex; align-items: center; gap: 18px;
+  height: calc(var(--topbar-h) - 5px);
+  padding: 0 26px;
   background: var(--bg1);
   border-bottom: 1px solid var(--line-soft);
 }
-.brand { font: 700 15px/1 var(--mono); white-space: nowrap; }
+.brand { font: 700 20px/1 var(--mono); white-space: nowrap; letter-spacing: -.01em; }
 .brand-dim { color: var(--ink-faint); font-weight: 400; }
 .brand-tag {
   color: var(--amber);
-  font: 600 9.5px/1 var(--mono);
-  letter-spacing: .14em;
-  vertical-align: 2px;
-  margin-left: 2px;
+  font: 600 11px/1 var(--mono);
+  letter-spacing: .16em;
+  vertical-align: 3px;
+  margin-left: 4px;
 }
-.tabs { display: flex; gap: 2px; height: 100%; }
+.tabs { display: flex; gap: 4px; height: 100%; }
 .tab {
   background: transparent; color: var(--ink-mut);
   border: none; border-radius: 0;
-  border-bottom: 2px solid transparent;
+  border-bottom: 3px solid transparent;
   margin-bottom: -1px;
-  padding: 0 14px; height: 100%;
+  padding: 0 18px; height: 100%;
+  font-size: 13px;
 }
 .tab:hover { background: transparent; color: var(--ink); }
 .tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+.pill { font-size: 12.5px; }
+.vram-readout { font-size: 12.5px; }
 
 .vram-strip {
-  height: 4px;
+  height: 5px;
   background:
     repeating-linear-gradient(90deg,
       transparent 0, transparent calc(12.5% - 1px),
@@ -328,6 +331,62 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
   font-size: 12.5px;
   color: var(--amber);
 }
+
+/* ─── monitor charts ─── */
+.h2-note {
+  font: 400 10px/1 var(--mono);
+  letter-spacing: .06em;
+  text-transform: none;
+  color: var(--ink-faint);
+  margin-left: 8px;
+}
+.charts-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+@media (max-width: 500px) { .charts-grid { grid-template-columns: 1fr; } }
+.chart-card {
+  background: var(--bg1);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 12px 14px 8px;
+}
+.chart-head { display: flex; align-items: baseline; margin-bottom: 6px; }
+.chart-title {
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-mut);
+  flex: 1;
+}
+.chart-cur { font: 600 15px/1 var(--mono); color: var(--ink); }
+.chart-empty { font: 11px var(--mono); padding: 24px 0; text-align: center; }
+.chart-svg { width: 100%; height: auto; display: block; }
+.chart-svg .grid { stroke: var(--line-soft); stroke-width: 1; }
+.chart-svg .tick { fill: var(--ink-faint); font: 10px var(--mono); }
+.chart-svg .series {
+  fill: none; stroke: var(--amber); stroke-width: 2;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.chart-svg .series-dot, .chart-svg .hover-dot { fill: var(--amber); }
+.chart-svg .crosshair { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 3 3; }
+#chart-tip {
+  position: fixed; z-index: 20; pointer-events: none;
+  background: var(--bg-deep); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 4px 8px; font: 11px var(--mono);
+}
+
+/* serving bind */
+.bind-block { border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 12px; }
+.small-note { font-size: 12px; margin: 4px 0 10px; }
+.bind-row select, .bind-row input {
+  background: var(--bg-deep); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 7px 9px; font: 12px var(--mono);
+}
+.bind-row select { min-width: 280px; }
+.bind-row input { width: 185px; }
+#bind-status { font: 11px var(--mono); }
 
 /* ─── chat ─── */
 .chat-layout { display: flex; height: calc(100vh - var(--topbar-h)); }

@@ -11,6 +11,12 @@ FROM python:3.12-slim
 # /var/run/docker.sock. This is how the UI starts/stops/inspects `vllm`.
 COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
+# iproute2: run.sh's BIND_CIDR resolution shells out to `ip`, and the UI
+# enumerates host networks (--network host makes them visible) for the
+# serving-bind presets.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 

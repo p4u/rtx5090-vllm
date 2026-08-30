@@ -99,7 +99,9 @@ FastAPI app + vanilla-JS frontend, run by `run-ui.sh` as container `vllm-ui`
 (`--network host`, docker socket + repo mounted at its identical host path,
 non-root). Password gate = `UI_PASSWORD` env; the OpenAI API is re-served at
 `:8090/v1` behind a single bearer token (state in `ui/data/state.json`,
-gitignored). The image is code-free (deps + docker CLI only) — the app runs
+gitignored). The Monitor tab's history charts are fed by an in-memory 5s
+sampler in `app.py` (`HISTORY` ring, last hour — cleared on UI restart by
+design). The image is code-free (deps + docker CLI + iproute2 only) — the app runs
 from the mounted `ui/`, so it can't drift from `run.sh` across rebuilds; a
 `docker restart vllm-ui` picks up code changes, no rebuild needed. The Chat
 tab talks to the running model through session-gated `/api/chat` (the browser
@@ -107,9 +109,17 @@ never sees the bearer token); conversations live in browser localStorage.
 
 Key contracts to preserve when editing:
 
-- The UI **executes `./run.sh <key> [overrides]`** (with `HOST_IP=127.0.0.1`
-  forced, so UI-launched models bind loopback and the token actually gates).
-  It never re-implements launch flags.
+- The UI **executes `./run.sh <key> [overrides]`**. It never re-implements
+  launch flags. The serving bind is user-configurable (API access panel →
+  "Model serving bind", persisted as `serve_bind` in state): unset = pass no
+  `HOST_IP`/`HOST_PORT` so run.sh applies `.env`; an explicit choice is passed
+  as real env vars (which win over `.env`). Every UI launch also sets
+  `VLLM_API_KEY` to the UI's bearer token — run.sh forwards it into the
+  container, so the model's direct /v1 port is never tokenless wherever it
+  binds (/health + /metrics stay open; the proxy authenticates upstream with
+  the key from `docker inspect` Env, so token renewal never breaks it). The
+  UI image ships `iproute2` because run.sh's `BIND_CIDR` path shells out to
+  `ip`.
 - `ui/vllm_mgr.py` **structurally parses `run.sh`**: `select_model()`'s
   `key)` labels, `SNAPSHOT_REPO="…"`, `MODEL_ARGS=( … )`, plus `COMMON_ARGS`
   and `./run.sh --list`. Keep that layout, or fix the parser in the same
@@ -204,10 +214,8 @@ Field rules:
 
 ### Helper scripts carry their own model lists — and they drift
 
-Three helpers duplicate the lineup and are **currently stale** (they still list
-the removed `gemma4-text` and are missing `qwen36-27b-unsloth`, `qwen36-fast`,
-`gemma4-vision`). Update them alongside the five above, or fix the drift when
-you touch them:
+Three helpers duplicate the lineup (in sync as of the `qwen38-27b` addition).
+Update them alongside the five above, or fix the drift when you touch them:
 
 - `download-model.sh` → `DEFAULT_REPOS` (drives `--all`; a missing entry means
   `--all` silently skips that model, though `run.sh` still auto-downloads it).

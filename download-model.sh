@@ -20,14 +20,18 @@ mkdir -p "$CACHE_DIR"
 # Every repo referenced by run.sh, keyed by its run.sh model name.
 # Keep this list in sync with the SNAPSHOT_REPO values in run.sh.
 DEFAULT_REPOS=(
+  "unsloth/Qwen3.8-27B-NVFP4"                              # qwen38-27b (newest, quality-first)
   "cyankiwi/Qwen3.6-27B-AWQ-INT4"                          # qwen36-27b-awq  (preferred 27B)
   "sakamakismile/Qwen3.6-27B-NVFP4"                        # qwen36-27b-nvfp4
+  "unsloth/Qwen3.6-27B-NVFP4"                              # qwen36-27b-unsloth
+  "unsloth/Qwen3.6-35B-A3B-NVFP4-Fast"                     # qwen36-fast
   "chankhavu/Nemotron-Cascade-2-30B-A3B-NVFP4"             # cascade2
   "RedHatAI/Qwen3.6-35B-A3B-NVFP4"                         # qwen36
   "cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit"        # qwen3-coder
   "cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"                  # gemma4
-  "LilaRest/gemma-4-31B-it-NVFP4-turbo"                    # gemma4-text
+  "necroyancer/gemma-4-31B-it-NVFP4-turbo-vision"          # gemma4-vision
   "openai/gpt-oss-20b"                                     # gpt-oss
+  "RedHatAI/gpt-oss-20b-speculator.eagle3"                 # gpt-oss EAGLE3 draft head
   "nvidia/Nemotron-3-Nano-Omni-30B-A3B-Reasoning-NVFP4"   # nemotron3
 )
 

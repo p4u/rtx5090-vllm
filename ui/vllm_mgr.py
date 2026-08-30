@@ -173,6 +173,16 @@ def container_model_key(info: dict, run_models: dict) -> str | None:
     return None
 
 
+def container_api_key(info: dict) -> str | None:
+    """The VLLM_API_KEY the live container was launched with (docker inspect
+    Env is authoritative — covers manual launches with a different .env key).
+    None = the container's /v1 endpoints are unauthenticated."""
+    for e in (info.get("Config", {}).get("Env") or []):
+        if e.startswith("VLLM_API_KEY="):
+            return e.split("=", 1)[1] or None
+    return None
+
+
 def container_upstream(info: dict) -> str | None:
     """Base URL the proxy should forward to, derived from the live container
     (works for containers we didn't start, whatever address they bound).
@@ -189,6 +199,40 @@ def container_upstream(info: dict) -> str | None:
     if ip:
         return f"http://{ip}:8000"
     return None
+
+
+# ─── host networks / serving bind ───────────────────────────────────────────
+
+def host_interfaces() -> list[dict]:
+    """IPv4 addresses of the host's interfaces (visible thanks to
+    --network host). Loopback is skipped — it's already a preset."""
+    out = subprocess.run(["ip", "-o", "-4", "addr", "show"],
+                         capture_output=True, text=True, timeout=10).stdout
+    seen = []
+    for line in out.splitlines():
+        parts = line.split()
+        # "2: eth0    inet 192.168.1.7/24 brd ..."
+        if len(parts) >= 4 and parts[2] == "inet":
+            ifname, ip = parts[1], parts[3].split("/")[0]
+            if ifname != "lo" and ip not in [s["ip"] for s in seen]:
+                seen.append({"ifname": ifname, "ip": ip})
+    return seen
+
+
+def env_file_defaults() -> dict:
+    """HOST_IP / HOST_PORT / BIND_CIDR as written in the repo .env (display
+    only — run.sh applies them itself when the launcher passes no override)."""
+    vals = {}
+    env_file = REPO_DIR / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip().removeprefix("export ")
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() in ("HOST_IP", "HOST_PORT", "BIND_CIDR"):
+                vals[k.strip()] = v.strip().strip("\"'")
+    return vals
 
 
 # ─── launcher ───────────────────────────────────────────────────────────────
@@ -249,20 +293,37 @@ class Launcher:
     def busy(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
 
-    async def start(self, key: str, override_args: list[str]) -> None:
+    async def start(self, key: str, override_args: list[str],
+                    bind: dict | None = None, api_key: str | None = None) -> None:
         if self.busy():
             raise RuntimeError("a launch is already in progress")
         state.LAUNCH_LOG.parent.mkdir(parents=True, exist_ok=True)
         log = open(state.LAUNCH_LOG, "wb")
-        log.write(f">>> [ui] launching {key} {' '.join(override_args)}\n".encode())
+        # Serving bind: an explicit UI choice is passed as real env vars, which
+        # beat .env inside run.sh. With no UI choice the launcher passes
+        # nothing and run.sh applies its own defaults (.env HOST_IP/BIND_CIDR/
+        # HOST_PORT). Anything but 127.0.0.1 exposes raw, tokenless vLLM on
+        # that interface — the UI warns, the proxy keeps working either way.
+        env = dict(os.environ)
+        bind = bind or {}
+        if bind.get("host"):
+            env["HOST_IP"] = bind["host"]
+        if bind.get("port"):
+            env["HOST_PORT"] = str(bind["port"])
+        # The model port itself is never open tokenless: run.sh forwards
+        # VLLM_API_KEY into the vLLM container, gating its /v1 endpoints with
+        # the same bearer token as the proxy (env, not argv — keeps the secret
+        # out of the launch log). Renewing the token in the UI applies to the
+        # direct port on the NEXT model start.
+        if api_key:
+            env["VLLM_API_KEY"] = api_key
+        bind_note = f" [bind {env.get('HOST_IP', '.env default')}:{env.get('HOST_PORT', '.env default')}]"
+        log.write(f">>> [ui] launching {key} {' '.join(override_args)}{bind_note}\n".encode())
         log.flush()
-        # HOST_IP=127.0.0.1 as a real env var beats any .env value: models the
-        # UI launches bind loopback-only, and the token-gated proxy is the only
-        # LAN entrance. Manual ./run.sh from a shell keeps its own behavior.
         self.proc = await asyncio.create_subprocess_exec(
             "bash", str(RUN_SH), key, *override_args,
             cwd=REPO_DIR, stdout=log, stderr=log,
-            env={**os.environ, "HOST_IP": "127.0.0.1"},
+            env=env,
         )
         self.current = {"key": key, "started_at": time.time(),
                         "returncode": None, "error": None}

@@ -41,7 +41,7 @@ Every model in the lineup has been booted and completion-tested on a real
 - **`jq`** and **`curl`** for the test scripts.
 - **`hf` CLI** (`pip install "huggingface_hub[hf_xet]"`) for fast downloads —
   optional, a Docker-based fallback is built in.
-- Disk: ~20 GB per model. The full lineup is ~180 GB.
+- Disk: ~20 GB per model. The full lineup is ~270 GB.
 
 No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
 `vllm/vllm-openai:latest` container.
@@ -114,10 +114,15 @@ click, tune launch flags, watch live vLLM metrics/logs/GPU stats, and gate the
 OpenAI API behind a bearer token.
 
 ```bash
-# .env: set UI_PASSWORD=... (required), optionally UI_HOST / UI_PORT
+# .env: set UI_PASSWORD=... (required), optionally UI_HOST / UI_PORT / UI_DOMAIN
 ./run-ui.sh                  # builds + starts the vllm-ui container
 # open http://<host>:8090/  → log in with UI_PASSWORD
 ```
+
+The API access panel is the first thing shown: the OpenAI endpoint URL, the
+bearer token, and a copy-paste curl. Set `UI_DOMAIN` in `.env` (bare hostname,
+or a full `https://` origin when behind a TLS proxy) and the UI builds the
+displayed URL from it instead of the browser's address.
 
 What it does:
 
@@ -129,10 +134,12 @@ What it does:
   `--kv-cache-dtype`, free-form extra args). Overrides are appended after the
   verified per-model flags (last-wins), persisted across restarts, and never
   written back into `run.sh`. A reset button returns to the verified defaults.
-- **Runtime dashboard** — parsed vLLM `/metrics` (tokens/s, KV-cache usage,
-  running/waiting requests, TTFT, spec-decode acceptance), the effective launch
-  flags of the live container, `nvidia-smi` GPU stats, and a follow-mode log
-  panel.
+- **Monitor tab** — live tiles from vLLM `/metrics` (tokens/s, KV-cache usage,
+  running/waiting requests, TTFT, spec-decode acceptance) plus an hour of
+  history charts sampled every 5 s server-side (GPU utilization, VRAM,
+  temperature, power, KV cache, generation/prefill speed, requests) with
+  hover crosshairs; below them the effective launch flags of the live
+  container, `nvidia-smi` details, and a follow-mode log panel.
 - **API access panel** — a single bearer token for the OpenAI API, with
   show/copy/**renew** (renewing invalidates the old token instantly).
 - **Chat tab** — a ChatGPT-style chat with whatever model is running:
@@ -145,9 +152,17 @@ What it does:
 
 **Security model.** The UI is password-gated (`UI_PASSWORD`). The UI also
 serves the OpenAI API at `http://<host>:8090/v1` as a reverse proxy that
-requires `Authorization: Bearer <token>`. Models launched *from the UI* are
-bound to `127.0.0.1` (the raw, tokenless vLLM port is not reachable from the
-network) — the token-checked proxy is the only LAN entrance:
+requires `Authorization: Bearer <token>`. Where the *model itself* listens is
+configurable from the API access panel ("Model serving bind"): by default it
+follows `.env` (`HOST_IP` / `BIND_CIDR` / `HOST_PORT`), with presets for
+`127.0.0.1` (loopback), each of the host's configured network addresses, or
+`0.0.0.0`. **The model port is never open tokenless**: UI launches pass the
+bearer token to vLLM itself (`VLLM_API_KEY`), so the direct port demands the
+same token as the proxy wherever it binds (only `/health` and `/metrics` stay
+unauthenticated, for the healthcheck and monitoring). A renewed token reaches
+the direct port on the next model start; the proxy always works because it
+authenticates upstream with the key the live container was launched with.
+Set `VLLM_API_KEY` in `.env` to gate manual `./run.sh` launches the same way:
 
 ```bash
 curl http://<host>:8090/v1/chat/completions \
@@ -172,11 +187,12 @@ UI's own state (token, overrides) lives in `ui/data/` (gitignored).
 
 ## Model lineup
 
-Nine models, each filling a specific role. Run `./run.sh --help` for the full
+Twelve models, each filling a specific role. Run `./run.sh --help` for the full
 per-model rationale, or `./run.sh` for the interactive picker.
 
 | key                | params        | quant      | ctx (5090) | vision | role |
 |--------------------|---------------|------------|------------|--------|------|
+| `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Newest Qwen (3.8), quality-first dynamic quant, mm off (needs vLLM ≥0.28) |
 | `qwen36-27b-awq`   | 27B dense     | AWQ INT4   | 262K       | —      | ⭐ Best coding quality/token, ~2× decode vs NVFP4 |
 | `qwen36-27b-nvfp4` | 27B dense     | NVFP4      | 262K       | —      | Same model, Blackwell-native FP4 path |
 | `qwen36-27b-unsloth`| 27B dense    | NVFP4-dyn  | 262K       | —      | unsloth dynamic NVFP4, higher-q/slower, mm off (needs vLLM ≥0.24) |
@@ -190,7 +206,7 @@ per-model rationale, or `./run.sh` for the interactive picker.
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
 `ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV.
-The container tracks `vllm/vllm-openai:latest` (currently **0.25.1**). Most
+The container tracks `vllm/vllm-openai:latest` (currently **0.28.0**). Most
 values were first confirmed on 0.22.1; the two `unsloth` NVFP4-dynamic entries
 require vLLM ≥ 0.24. The old LilaRest text-only Gemma 4 was **removed** — its
 quantized `lm_head` breaks on vLLM ≥ 0.24; `gemma4-vision` (unquantized head)
@@ -198,6 +214,7 @@ replaces it and is verified on 0.25.1.
 
 ### Picking one at a glance
 
+- **Best overall quality (newest Qwen)** → `qwen38-27b` (Qwen3.8 dense, dynamic NVFP4, ~28.5 t/s decode, prefill 6.3K→2.1K t/s from 38K→259K ctx)
 - **Best coding quality per token** → `qwen36-27b-awq` (dense, 2× decode)
 - **Fastest capable daily driver + vision** → `qwen36` (3B-active MoE)
 - **Tool-loop with predictable latency** → `qwen3-coder` (no thinking blocks)

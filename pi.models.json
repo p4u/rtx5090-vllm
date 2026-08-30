@@ -10,6 +10,25 @@
       },
       "models": [
         {
+          "id": "qwen38-27b",
+          "name": "Qwen3.8 27B NVFP4-dynamic unsloth (vLLM) — 262K, ⭐ NEWEST, quality-first, text-only (mm disabled)",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
           "id": "qwen36-27b-awq",
           "name": "Qwen3.6 27B AWQ-INT4 cyankiwi (vLLM) — 262K, ⭐ PREFERRED 27B, ~2x decode vs NVFP4, vision",
           "reasoning": true,

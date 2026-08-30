@@ -24,13 +24,16 @@ MAX_TOKENS=2000  # enough for reasoning models
 
 # Format: "key|target_ctx|notes" — target_ctx matches run.sh's configured ceiling.
 ALL_MODELS=(
+  "qwen38-27b|262144|Qwen3.8 DeltaNet 27B NVFP4-dyn (mm off)"
   "qwen36-27b-awq|262144|DeltaNet 27B AWQ"
   "qwen36-27b-nvfp4|262144|DeltaNet 27B NVFP4"
+  "qwen36-27b-unsloth|262144|DeltaNet 27B NVFP4-dyn (mm off)"
+  "qwen36-fast|262144|DeltaNet 35B MoE NVFP4-dyn (mm off)"
   "qwen36|196608|DeltaNet 35B MoE (tight VRAM)"
   "qwen3-coder|221184|30B Coder MoE"
   "cascade2|131072|Mamba2+MoE 30B"
   "gemma4|262144|Gemma4 MoE 26B"
-  "gemma4-text|32768|Gemma4 dense 27B (KV limited)"
+  "gemma4-vision|131072|Gemma4 dense 31B + vision"
   "gpt-oss|131072|gpt-oss-20b (hard YaRN limit)"
   "nemotron3|229376|Nemotron3 Omni 31B (mm disabled)"
 )

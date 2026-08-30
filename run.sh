@@ -30,7 +30,8 @@
 # Pull the latest image with ./update-vllm.sh.
 #
 # ─── Model lineup (measured on RTX 5090) ────────────────────────────────────
-# Image is vllm/vllm-openai:latest (currently 0.25.1). The two unsloth qwen36
+# Image is vllm/vllm-openai:latest (currently 0.28.0; qwen38-27b REQUIRES
+# >= 0.28 — the Qwen3.8 arch is missing before it). The two unsloth qwen36
 # entries REQUIRE vLLM >= 0.24 (quantized lm_head). NOTE: the LilaRest text-only
 # Gemma 4 (gemma4-coder) was REMOVED — its quantized lm_head breaks the gemma4.py
 # tie_weights() path on vLLM >= 0.24; gemma4-vision (unquantized lm_head) replaces
@@ -39,6 +40,7 @@
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
+#   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ NEWEST: Qwen3.8, quality-first (mm off) [needs vLLM>=0.28]
 #   qwen36-27b-awq     27B dense      AWQ 4-bit     262K    qwen3_xml     ⭐ PREFERRED 27B, 2x decode vs nvfp4
 #   qwen36-27b-nvfp4   27B dense      NVFP4         262K    qwen3_xml     Blackwell-native FP4
 #   qwen36-27b-unsloth 27B dense      NVFP4-dyn     262K    qwen3_xml     unsloth dynamic NVFP4, higher-q (mm off) [needs vLLM>=0.24]
@@ -54,6 +56,7 @@
 #   ctx = verified boot+completion ceiling on a single 32 GB 5090.
 #
 # ─── Picking one at a glance ────────────────────────────────────────────────
+#   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
 #   Best coding quality per token?          → qwen36-27b-awq (dense, 2x decode)
 #   Fastest capable daily driver + vision?  → qwen36         (3B active MoE)
 #   Coder tool-loop, predictable latency?   → qwen3-coder    (no thinking blocks)
@@ -163,7 +166,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
+  qwen38-27b qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -194,6 +197,7 @@ usage() {
 # Interactive picker, shown when run.sh is invoked with no arguments.
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
+  "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8, quality-first dynamic quant, mm off (needs vLLM>=0.28)"
   "qwen36-27b-awq|27B dense AWQ-INT4 (cyankiwi), 262K — ⭐ PREFERRED 27B: best quality/token, 2x faster decode"
   "qwen36-27b-nvfp4|27B dense NVFP4 (sakamakismile), 262K — Blackwell-native FP4, 27B dense"
   "qwen36-27b-unsloth|27B dense NVFP4-dynamic (unsloth), 262K — higher-quality NVFP4, mm off (needs vLLM>=0.24)"
@@ -329,6 +333,47 @@ select_model() {
         --kv-cache-dtype fp8
         --enforce-eager
         --no-enable-prefix-caching
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_xml
+        --reasoning-parser qwen3
+      )
+      EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    qwen38-27b)
+      # unsloth/Qwen3.8-27B-NVFP4 (~22 GB). Unsloth Dynamic v3.0 NVFP4 of
+      # Qwen3.8-27B — the direct successor of the Qwen3.6 27B dense VL line
+      # (released 2026-08-13, Apache 2.0). Same Gated DeltaNet hybrid layout:
+      # 64 layers, full attention every 4th → only 16 layers grow KV
+      # (4 KV heads x 256 head_dim → ~32 KB/token at fp8). Mixed-precision
+      # dynamic quant (lm_head kept FP8) = quality-first; ~1.4 GB LIGHTER than
+      # the 3.6 unsloth so full-native ctx has more headroom.
+      # Vision disabled via --limit-mm-per-prompt: text-only focus, skips
+      # encoder profiling, frees memory for KV (context priority).
+      # compressed-tensors → auto-detected (omit --quantization).
+      # REQUIRES vLLM >= 0.28: Qwen3_5ForConditionalGeneration + FP8 lm_head
+      # (verified on 0.28.0; the 0.25.1 image predates the arch).
+      # MTP head ships in the weights — enable speculative decoding with
+      #   --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+      # only if you can spare the VRAM; it shrinks the KV pool below full ctx.
+      # ctx 262K (full native), VERIFIED on 0.28.0: KV 8.45 GiB → pool 269,809
+      # tokens (1.03x). Needle test at 259K prompt tokens: exact recall of two
+      # planted codes, 122s wall. --enforce-eager is mandatory at full ctx:
+      # CUDA graphs need ~2.5 GiB and only ~0.45 GiB is spare after KV.
+      # SPEED (measured, batch 1, streaming, TTFT excluded): decode ~28.5 t/s
+      # FLAT across thinking / /no_think / JSON output (bandwidth-bound dense
+      # decode — mode changes nothing). Prefill scales with depth: ~6.3K t/s
+      # @38K ctx, ~3.4K @139K, ~2.1K @259K (eager, quadratic attn). TTFT
+      # ~0.09s on short prompts.
+      SNAPSHOT_REPO="unsloth/Qwen3.8-27B-NVFP4"
+      MODEL_ARGS=(
+        --max-model-len 262144
+        --max-num-batched-tokens 4096
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.95
+        --kv-cache-dtype fp8
+        --enforce-eager
+        --no-enable-prefix-caching
+        --limit-mm-per-prompt '{"image":0,"video":0}'
         --enable-auto-tool-choice
         --tool-call-parser qwen3_xml
         --reasoning-parser qwen3
@@ -623,6 +668,14 @@ RUN_ARGS=(
   "${EXTRA_ENV[@]}"
   "${EXTRA_VOLS[@]}"
 )
+
+# Optional bearer token gating vLLM's own /v1 endpoints (vLLM reads
+# VLLM_API_KEY; equivalent to --api-key but passed as env so the secret never
+# shows up in `ps` output or launch logs). The web UI always sets this to its
+# API token so the model port is never open tokenless, wherever it binds; set
+# VLLM_API_KEY in .env to gate manual launches too. /health and /metrics stay
+# unauthenticated (healthcheck + monitoring depend on that).
+[[ -n "${VLLM_API_KEY:-}" ]] && RUN_ARGS+=(-e "VLLM_API_KEY=$VLLM_API_KEY")
 
 # Always detached. Restart policy = resilience (survive crash + reboot); see
 # RESTART_POLICY above. Set RESTART_POLICY=no to debug a config that won't boot.

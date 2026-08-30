@@ -16,6 +16,7 @@ let launching = false;
 let logSource = null;        // EventSource when following logs
 let tokenVisible = false;
 let tokenValue = null;
+let apiBase = location.origin + "/v1";   // overridden by UI_DOMAIN via /api/state
 
 // ─── tiny fetch helpers ────────────────────────────────────────────────────
 
@@ -56,9 +57,9 @@ function showLogin() {
 async function showMain() {
   $("login").hidden = true;
   $("main").hidden = false;
-  $("api-url").textContent = `${location.origin}/v1`;
+  $("api-url").textContent = apiBase;
   loadChats(); renderConvList(); renderMessages(); bindSettings();
-  await Promise.all([loadModels(), loadTokenMasked()]);
+  await Promise.all([loadModels(), loadTokenMasked(), loadBind()]);
   pollState();
 }
 
@@ -96,6 +97,11 @@ async function pollState() {
   try { st = await api("/api/state"); }
   catch { stateTimer = setTimeout(pollState, 5000); return; }
 
+  if (st.api_base && st.api_base !== apiBase) {
+    apiBase = st.api_base;
+    $("api-url").textContent = apiBase;
+    renderToken();
+  }
   runningKey = st.running_key;
   launching = st.launching;
   renderChatHeader();
@@ -433,7 +439,9 @@ function updateVramStrip(usedMib, totalMib) {
   }
   const pct = Math.min(100, (usedMib / totalMib) * 100);
   fill.style.width = pct.toFixed(1) + "%";
-  fill.classList.toggle("hot", pct > 96);
+  // ~96% is NORMAL for a max-context config (vLLM preallocates the KV pool);
+  // red only past 98% — the allocator's true danger zone.
+  fill.classList.toggle("hot", pct > 98);
   readout.textContent =
     `VRAM ${(usedMib / 1024).toFixed(1)}/${(totalMib / 1024).toFixed(0)} GiB`;
 }
@@ -503,7 +511,7 @@ function renderToken() {
     ? tokenValue : "••••••••••••••••••••";
   $("token-show").textContent = tokenVisible ? "Hide" : "Show";
   $("curl-example").textContent =
-    `curl ${location.origin}/v1/chat/completions \\\n` +
+    `curl ${apiBase}/chat/completions \\\n` +
     `  -H "Authorization: Bearer ${tokenVisible && tokenValue ? tokenValue : "<token>"}" \\\n` +
     `  -H "Content-Type: application/json" \\\n` +
     `  -d '{"model":"default","messages":[{"role":"user","content":"hi"}]}'`;
@@ -513,6 +521,55 @@ async function loadTokenMasked() {
   tokenValue = (await api("/api/token")).token;
   renderToken();
 }
+
+// ─── serving bind ──────────────────────────────────────────────────────────
+
+async function loadBind() {
+  let b;
+  try { b = await api("/api/bind"); } catch { return; }
+  const sel = $("bind-host");
+  sel.textContent = "";
+  const envd = b.env_defaults || {};
+  const envLabel = envd.HOST_IP ? `HOST_IP ${envd.HOST_IP}`
+    : envd.BIND_CIDR ? `BIND_CIDR ${envd.BIND_CIDR}` : "0.0.0.0";
+  const opts = [
+    ["", `Default from .env (${envLabel})`],
+    ["127.0.0.1", "127.0.0.1 — loopback only"],
+    ...(b.interfaces || []).map((i) => [i.ip, `${i.ip} — ${i.ifname}`]),
+    ["0.0.0.0", "0.0.0.0 — all interfaces"],
+  ];
+  for (const [value, label] of opts) {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = (b.current && b.current.host) || "";
+  $("bind-port").value = (b.current && b.current.port) || "";
+  $("bind-port").placeholder = `port (default ${envd.HOST_PORT || 8080})`;
+}
+
+$("bind-apply").addEventListener("click", async () => {
+  const status = $("bind-status");
+  status.textContent = "";
+  try {
+    await api("/api/bind", {
+      method: "POST",
+      body: JSON.stringify({
+        host: $("bind-host").value || null,
+        port: $("bind-port").value ? +$("bind-port").value : null,
+      }),
+    });
+    status.textContent = "Saved — applies on the next model start.";
+  } catch (e) {
+    status.textContent = `Not saved: ${e.message}`;
+  }
+});
+
+$("url-copy").addEventListener("click", async () => {
+  await navigator.clipboard.writeText(apiBase);
+  $("url-copy").textContent = "Copied!";
+  setTimeout(() => { $("url-copy").textContent = "Copy URL"; }, 1200);
+});
 
 $("token-show").addEventListener("click", () => {
   tokenVisible = !tokenVisible;
@@ -526,7 +583,8 @@ $("token-copy").addEventListener("click", async () => {
 });
 
 $("token-renew").addEventListener("click", async () => {
-  if (!confirm("Renew the API token? Every client using the old token stops working immediately.")) return;
+  if (!confirm("Renew the API token? Every client using the old token stops working immediately. " +
+               "The model's direct port keeps the old token until the next model start.")) return;
   tokenValue = (await api("/api/token/renew")).token;
   tokenVisible = true;
   renderToken();
@@ -535,14 +593,193 @@ $("token-renew").addEventListener("click", async () => {
 // ─── tabs ──────────────────────────────────────────────────────────────────
 
 function showTab(name) {
-  $("tab-manage").hidden = name !== "manage";
-  $("tab-chat").hidden = name !== "chat";
-  $("tab-btn-manage").classList.toggle("active", name === "manage");
-  $("tab-btn-chat").classList.toggle("active", name === "chat");
+  for (const t of ["manage", "monitor", "chat"]) {
+    $(`tab-${t}`).hidden = t !== name;
+    $(`tab-btn-${t}`).classList.toggle("active", t === name);
+  }
   if (name === "chat") { renderChatHeader(); $("chat-input").focus(); }
+  if (name === "monitor") pollHistory();
+  else stopHistory();
 }
 $("tab-btn-manage").addEventListener("click", () => showTab("manage"));
+$("tab-btn-monitor").addEventListener("click", () => showTab("monitor"));
 $("tab-btn-chat").addEventListener("click", () => showTab("chat"));
+
+// ─── monitor: history charts ───────────────────────────────────────────────
+// Hand-rolled SVG line charts (no chart library — the UI must work on an
+// isolated VPN). Dataviz discipline: one series per chart (the title names
+// it, no legend), thin 2px line, recessive grid, values in ink not series
+// color, crosshair + tooltip on hover, gaps render as breaks.
+
+let historyTimer = null;
+
+const CHART_DEFS = [
+  { key: "gpu_util", title: "GPU utilization", unit: "%", max: 100 },
+  { key: "vram_used_gib", title: "VRAM used", unit: "GiB", maxKey: "vram_total_gib" },
+  { key: "temp_c", title: "Temperature", unit: "°C" },
+  { key: "power_w", title: "Power draw", unit: "W" },
+  { key: "kv_pct", title: "KV cache usage", unit: "%", max: 100 },
+  { key: "gen_rate", title: "Generation speed", unit: "tok/s" },
+  { key: "prompt_rate", title: "Prefill speed", unit: "tok/s" },
+  { key: "requests_running", title: "Requests running", unit: "" },
+];
+
+function deriveRates(samples) {
+  // tokens/s from cumulative counter deltas; a counter drop = model restart.
+  let prev = null;
+  for (const s of samples) {
+    s.gen_rate = null; s.prompt_rate = null;
+    if (prev && s.ts > prev.ts) {
+      const dt = s.ts - prev.ts;
+      if (s.gen_tokens_total != null && prev.gen_tokens_total != null &&
+          s.gen_tokens_total >= prev.gen_tokens_total)
+        s.gen_rate = (s.gen_tokens_total - prev.gen_tokens_total) / dt;
+      if (s.prompt_tokens_total != null && prev.prompt_tokens_total != null &&
+          s.prompt_tokens_total >= prev.prompt_tokens_total)
+        s.prompt_rate = (s.prompt_tokens_total - prev.prompt_tokens_total) / dt;
+    }
+    prev = s;
+  }
+}
+
+const fmtClock = (ts) =>
+  new Date(ts * 1000).toTimeString().slice(0, 5);
+
+function chartTooltip() {
+  let tip = document.getElementById("chart-tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "chart-tip";
+    tip.hidden = true;
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function drawChart(def, samples, interval) {
+  const W = 600, H = 150, padL = 44, padR = 10, padT = 8, padB = 20;
+  const card = document.createElement("div");
+  card.className = "chart-card";
+
+  const points = samples.map((s) => [s.ts, s[def.key]]);
+  const vals = points.map((p) => p[1]).filter((v) => v != null);
+  const latest = vals.length ? vals[vals.length - 1] : null;
+
+  const head = document.createElement("div");
+  head.className = "chart-head";
+  const title = document.createElement("span");
+  title.className = "chart-title";
+  title.textContent = def.title;
+  const cur = document.createElement("span");
+  cur.className = "chart-cur";
+  cur.textContent = latest === null ? "—" : `${fmt(latest)} ${def.unit}`;
+  head.append(title, cur);
+  card.appendChild(head);
+
+  if (!vals.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted chart-empty";
+    empty.textContent = "no data yet";
+    card.appendChild(empty);
+    return card;
+  }
+
+  const t0 = points[0][0], t1 = points[points.length - 1][0];
+  let yMax = def.max ?? Math.max(...vals) * 1.1;
+  if (def.maxKey) {
+    const totals = samples.map((s) => s[def.maxKey]).filter((v) => v != null);
+    if (totals.length) yMax = totals[totals.length - 1];
+  }
+  if (yMax <= 0) yMax = 1;
+  const x = (ts) => t1 === t0 ? padL : padL + (W - padL - padR) * (ts - t0) / (t1 - t0);
+  const y = (v) => padT + (H - padT - padB) * (1 - Math.min(v, yMax) / yMax);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("class", "chart-svg");
+  const esc = (s) => String(s);
+  let inner = "";
+  // recessive grid: 3 horizontal lines + y labels in muted ink
+  for (const frac of [0, 0.5, 1]) {
+    const gy = padT + (H - padT - padB) * frac;
+    const val = yMax * (1 - frac);
+    inner += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" class="grid"/>` +
+             `<text x="${padL - 6}" y="${gy + 3.5}" class="tick" text-anchor="end">${fmt(val, val >= 100 ? 0 : 1)}</text>`;
+  }
+  inner += `<text x="${padL}" y="${H - 5}" class="tick">${fmtClock(t0)}</text>` +
+           `<text x="${W - padR}" y="${H - 5}" class="tick" text-anchor="end">${fmtClock(t1)}</text>`;
+  // series: break the line where samples are missing or far apart
+  let seg = [];
+  const segs = [];
+  let prevTs = null;
+  for (const [ts, v] of points) {
+    const gap = prevTs !== null && ts - prevTs > interval * 3;
+    if (v == null || gap) { if (seg.length) segs.push(seg); seg = []; }
+    if (v != null) seg.push(`${x(ts).toFixed(1)},${y(v).toFixed(1)}`);
+    prevTs = ts;
+  }
+  if (seg.length) segs.push(seg);
+  for (const sg of segs) {
+    if (sg.length === 1) {
+      const [px, py] = sg[0].split(",");
+      inner += `<circle cx="${px}" cy="${py}" r="2.5" class="series-dot"/>`;
+    } else {
+      inner += `<polyline points="${sg.join(" ")}" class="series"/>`;
+    }
+  }
+  inner += `<line class="crosshair" x1="0" y1="${padT}" x2="0" y2="${H - padB}" visibility="hidden"/>` +
+           `<circle class="hover-dot" r="3.5" visibility="hidden"/>`;
+  svg.innerHTML = inner;
+  card.appendChild(svg);
+
+  // hover layer: nearest-sample crosshair + tooltip
+  const tip = chartTooltip();
+  const cross = svg.querySelector(".crosshair");
+  const hdot = svg.querySelector(".hover-dot");
+  svg.addEventListener("mousemove", (e) => {
+    const r = svg.getBoundingClientRect();
+    const ts = t0 + (t1 - t0) * Math.min(Math.max(((e.clientX - r.left) / r.width * W - padL) / (W - padL - padR), 0), 1);
+    let best = null;
+    for (const [pts, v] of points)
+      if (v != null && (best === null || Math.abs(pts - ts) < Math.abs(best[0] - ts))) best = [pts, v];
+    if (!best) return;
+    cross.setAttribute("x1", x(best[0])); cross.setAttribute("x2", x(best[0]));
+    cross.removeAttribute("visibility");
+    hdot.setAttribute("cx", x(best[0])); hdot.setAttribute("cy", y(best[1]));
+    hdot.removeAttribute("visibility");
+    tip.hidden = false;
+    tip.textContent = `${fmt(best[1])} ${def.unit} · ${fmtClock(best[0])}`;
+    tip.style.left = `${e.clientX + 12}px`;
+    tip.style.top = `${e.clientY - 28}px`;
+  });
+  svg.addEventListener("mouseleave", () => {
+    cross.setAttribute("visibility", "hidden");
+    hdot.setAttribute("visibility", "hidden");
+    tip.hidden = true;
+  });
+  return card;
+}
+
+async function pollHistory() {
+  clearTimeout(historyTimer);
+  let h;
+  try { h = await api("/api/history"); }
+  catch { historyTimer = setTimeout(pollHistory, 10000); return; }
+  const samples = h.samples || [];
+  deriveRates(samples);
+  $("charts-empty").hidden = samples.length > 0;
+  const grid = $("charts");
+  grid.textContent = "";
+  if (samples.length) {
+    for (const def of CHART_DEFS) grid.appendChild(drawChart(def, samples, h.interval));
+  }
+  if (!$("tab-monitor").hidden) historyTimer = setTimeout(pollHistory, 10000);
+}
+
+function stopHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = null;
+}
 
 // ─── chat: minimal markdown renderer ───────────────────────────────────────
 

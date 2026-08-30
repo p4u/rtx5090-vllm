@@ -25,6 +25,7 @@
       <div class="brand">vllm<span class="brand-dim">-ui</span> <span class="brand-tag">RTX 5090</span></div>
       <nav class="tabs">
         <button id="tab-btn-manage" class="tab active">Manage</button>
+        <button id="tab-btn-monitor" class="tab">Monitor</button>
         <button id="tab-btn-chat" class="tab">Chat</button>
       </nav>
       <div id="status-pill" class="pill pill-off">no model</div>
@@ -51,41 +52,15 @@
 
   <main id="tab-manage">
     <section>
-      <h2>Models</h2>
-      <div id="model-grid" class="grid"></div>
-    </section>
-
-    <section>
-      <h2>Runtime</h2>
-      <div id="runtime-empty" class="muted">No model running — metrics appear here once one is up.</div>
-      <div id="runtime" hidden>
-        <div class="tiles" id="tiles"></div>
-        <div class="cols">
-          <div class="card">
-            <h3>GPU</h3>
-            <div id="gpu-body" class="kv"></div>
-          </div>
-          <div class="card">
-            <h3>Effective launch flags</h3>
-            <div id="flags-body" class="kv small"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="row">
-            <h3>Logs</h3>
-            <div class="spacer"></div>
-            <button id="follow-btn" class="btn ghost small-btn">Follow</button>
-          </div>
-          <pre id="log-panel" class="log"></pre>
-        </div>
-      </div>
-    </section>
-
-    <section>
       <h2>API access</h2>
-      <div class="card">
-        <p>Single bearer token for the OpenAI-compatible API at
-          <code id="api-url"></code>. Renewing invalidates the old token immediately.</p>
+      <div class="card api-card">
+        <p>OpenAI-compatible endpoint — point any client here:</p>
+        <div class="row token-row">
+          <code id="api-url" class="token api-url"></code>
+          <button id="url-copy" class="btn small-btn">Copy URL</button>
+        </div>
+        <p>Bearer token (send as <code>Authorization: Bearer …</code>).
+          Renewing invalidates the old token immediately:</p>
         <div class="row token-row">
           <code id="token-value" class="token">••••••••••••••••••••</code>
           <button id="token-show" class="btn ghost small-btn">Show</button>
@@ -93,6 +68,65 @@
           <button id="token-renew" class="btn danger small-btn">Renew</button>
         </div>
         <pre class="log small" id="curl-example"></pre>
+        <div class="bind-block">
+          <h3>Model serving bind</h3>
+          <p class="muted small-note">Where the vLLM container listens.
+            Applies on the next model start. Wherever it binds, the model
+            port requires the same bearer token as the proxy (only
+            <code>/health</code> and <code>/metrics</code> stay open).
+            A renewed token reaches this port on the next model start.</p>
+          <div class="row bind-row">
+            <select id="bind-host"></select>
+            <input id="bind-port" type="number" min="1" max="65535" placeholder="port">
+            <button id="bind-apply" class="btn small-btn">Apply</button>
+            <span id="bind-status" class="muted"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Models</h2>
+      <div id="model-grid" class="grid"></div>
+    </section>
+
+  </main>
+
+  <!-- monitor tab -->
+  <main id="tab-monitor" hidden>
+    <section>
+      <h2>Live</h2>
+      <div id="runtime-empty" class="muted">No model running — live stats appear here once one is up.</div>
+      <div id="runtime" hidden>
+        <div class="tiles" id="tiles"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>History <span class="h2-note">last hour · 5s samples</span></h2>
+      <div id="charts-empty" class="muted">Charts fill in as samples arrive (one every 5 seconds while a model container exists).</div>
+      <div id="charts" class="charts-grid"></div>
+    </section>
+
+    <section>
+      <h2>Details</h2>
+      <div class="cols">
+        <div class="card">
+          <h3>GPU</h3>
+          <div id="gpu-body" class="kv"></div>
+        </div>
+        <div class="card">
+          <h3>Effective launch flags</h3>
+          <div id="flags-body" class="kv small"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row">
+          <h3>Logs</h3>
+          <div class="spacer"></div>
+          <button id="follow-btn" class="btn ghost small-btn">Follow</button>
+        </div>
+        <pre id="log-panel" class="log"></pre>
       </div>
     </section>
   </main>

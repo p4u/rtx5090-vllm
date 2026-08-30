@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+from collections import deque
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -35,6 +36,21 @@ if not UI_PASSWORD:
 
 SESSION_COOKIE = "vllm_ui_session"
 SESSION_MAX_AGE = 7 * 24 * 3600
+
+# Public address clients should use for the OpenAI API. UI_DOMAIN is a bare
+# hostname (the UI port is appended) or a full http(s):// origin when fronted
+# by a TLS reverse proxy. Unset → the frontend falls back to whatever origin
+# the browser used.
+UI_DOMAIN = os.environ.get("UI_DOMAIN", "").strip()
+UI_PORT = os.environ.get("UI_PORT", "8090").strip() or "8090"
+
+
+def public_api_base() -> str | None:
+    if not UI_DOMAIN:
+        return None
+    if UI_DOMAIN.startswith(("http://", "https://")):
+        return UI_DOMAIN.rstrip("/") + "/v1"
+    return f"http://{UI_DOMAIN}:{UI_PORT}/v1"
 
 app = FastAPI(title="vllm-ui", docs_url=None, redoc_url=None, openapi_url=None)
 launcher = vllm_mgr.Launcher()
@@ -101,6 +117,15 @@ async def _upstream() -> tuple[str | None, dict | None]:
     return vllm_mgr.container_upstream(info), info
 
 
+def _upstream_auth(info: dict | None) -> dict:
+    """Authorization header for the live container's /v1 endpoints, using the
+    key IT was launched with (not the current UI token — a renewed token only
+    reaches the direct port on the next model start, and manual launches may
+    carry their own .env key). Empty for an unauthenticated container."""
+    key = vllm_mgr.container_api_key(info) if info else None
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 async def _health_ok(base: str | None) -> bool:
     if not base:
         return False
@@ -109,6 +134,60 @@ async def _health_ok(base: str | None) -> bool:
         return r.status_code == 200
     except httpx.HTTPError:
         return False
+
+
+# ─── history sampler (Monitor tab) ──────────────────────────────────────────
+# One sample every 5s, in-memory ring of the last hour. Kept server-side so
+# the charts survive page reloads and are shared across viewers; a UI restart
+# clears them (acceptable — this is a live instrument, not a TSDB).
+
+HISTORY: deque = deque(maxlen=720)
+SAMPLE_EVERY = 5
+
+
+async def _sampler():
+    while True:
+        sample = {"ts": time.time()}
+        try:
+            base, info = await _upstream()
+            g = await vllm_mgr.gpu_stats()
+            if g:
+                sample.update(gpu_util=g["utilization_pct"],
+                              vram_used_gib=round(g["memory_used_mib"] / 1024, 2),
+                              vram_total_gib=round(g["memory_total_mib"] / 1024, 2),
+                              temp_c=g["temperature_c"], power_w=g["power_w"])
+            if base:
+                try:
+                    r = await client.get(base + "/metrics", timeout=4)
+                    if r.status_code == 200:
+                        m = vllm_mgr.summarize_metrics(r.text)
+                        sample.update(
+                            kv_pct=None if m["kv_cache_usage"] is None
+                                   else round(m["kv_cache_usage"] * 100, 2),
+                            gen_tokens_total=m["generation_tokens_total"],
+                            prompt_tokens_total=m["prompt_tokens_total"],
+                            requests_running=m["requests_running"],
+                            requests_waiting=m["requests_waiting"])
+                except httpx.HTTPError:
+                    pass
+            # Only record when there is something to show — gaps between
+            # models render as breaks in the charts.
+            if len(sample) > 1:
+                HISTORY.append(sample)
+        except Exception:
+            pass  # sampling must never die
+        await asyncio.sleep(SAMPLE_EVERY)
+
+
+@app.on_event("startup")
+async def _start_sampler():
+    asyncio.create_task(_sampler())
+
+
+@app.get("/api/history")
+async def api_history(request: Request):
+    require_session(request)
+    return {"interval": SAMPLE_EVERY, "samples": list(HISTORY)}
 
 
 # ─── management API (session-gated) ─────────────────────────────────────────
@@ -121,6 +200,7 @@ async def api_state(request: Request):
     healthy = await _health_ok(base)
     launch = launcher.phase(info, healthy)
     result = {
+        "api_base": public_api_base(),
         "running_key": vllm_mgr.container_model_key(info, run_models) if info else None,
         "container": None,
         "healthy": healthy,
@@ -197,8 +277,43 @@ async def api_start(key: str, request: Request):
     st["overrides"][key] = overrides
     st["last_model"] = key
     state.save(st)
-    await launcher.start(key, override_args)
+    await launcher.start(key, override_args, bind=st.get("serve_bind"),
+                         api_key=st["api_token"])
     return {"ok": True, "key": key, "args": override_args}
+
+
+@app.get("/api/bind")
+async def api_bind_get(request: Request):
+    require_session(request)
+    return {
+        "current": state.load().get("serve_bind") or {},
+        "env_defaults": vllm_mgr.env_file_defaults(),
+        "interfaces": vllm_mgr.host_interfaces(),
+    }
+
+
+@app.post("/api/bind")
+async def api_bind_set(request: Request):
+    """Persist where the NEXT model launch binds. host null/empty = follow
+    .env; otherwise must be loopback, 0.0.0.0, or a current host address."""
+    require_session(request)
+    body = await request.json()
+    host = (body.get("host") or "").strip() or None
+    port = body.get("port") or None
+    if host:
+        allowed = {"127.0.0.1", "0.0.0.0"} | {i["ip"] for i in vllm_mgr.host_interfaces()}
+        if host not in allowed:
+            raise HTTPException(422, f"host must be one of {sorted(allowed)}")
+    if port is not None:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            raise HTTPException(422, "port must be an integer")
+        if not (1 <= port <= 65535):
+            raise HTTPException(422, "port must be within [1, 65535]")
+    state.update(serve_bind={"host": host, "port": port})
+    return {"ok": True, "serve_bind": {"host": host, "port": port},
+            "note": "applies on the next model start"}
 
 
 @app.post("/api/stop")
@@ -278,7 +393,7 @@ async def api_chat(request: Request):
     /v1 proxy but gated by the login session instead of the API token, so the
     browser never handles the bearer token."""
     require_session(request)
-    base, _ = await _upstream()
+    base, info = await _upstream()
     if not base:
         return JSONResponse(
             {"error": {"message": "no model is running — start one from the Models tab",
@@ -286,7 +401,8 @@ async def api_chat(request: Request):
     body = await request.body()
     upstream_req = client.build_request(
         "POST", f"{base}/v1/chat/completions",
-        headers={"Content-Type": "application/json"}, content=body)
+        headers={"Content-Type": "application/json", **_upstream_auth(info)},
+        content=body)
     try:
         upstream = await client.send(upstream_req, stream=True)
     except httpx.HTTPError:
@@ -317,6 +433,7 @@ async def proxy(path: str, request: Request):
                        "type": "service_unavailable"}}, status_code=503)
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in HOP_BY_HOP and k.lower() != "authorization"}
+    headers.update(_upstream_auth(info))
     upstream_req = client.build_request(
         request.method, f"{base}/v1/{path}",
         headers=headers, params=request.query_params,

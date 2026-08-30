@@ -25,13 +25,16 @@ MAX_TOKENS="${MAX_TOKENS:-2000}"
 PROMPT="Reply with exactly one sentence confirming you are working."
 
 ALL_MODELS=(
+  qwen38-27b
   qwen36-27b-awq
   qwen36-27b-nvfp4
+  qwen36-27b-unsloth
+  qwen36-fast
   cascade2
   qwen36
   qwen3-coder
   gemma4
-  gemma4-text
+  gemma4-vision
   gpt-oss
   nemotron3
 )

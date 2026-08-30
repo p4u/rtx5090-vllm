@@ -77,6 +77,7 @@ docker run -d \
   -e UI_PASSWORD \
   -e UI_HOST \
   -e UI_PORT \
+  -e UI_DOMAIN \
   vllm-ui >/dev/null
 
 display_host="${UI_HOST:-0.0.0.0}"
