@@ -17,6 +17,7 @@ let logSource = null;        // EventSource when following logs
 let tokenVisible = false;
 let tokenValue = null;
 let apiBase = location.origin + "/v1";   // overridden by UI_DOMAIN via /api/state
+let browsingAvailable = false;           // obscura image present (from /api/state)
 
 // ─── tiny fetch helpers ────────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ async function pollState() {
     $("api-url").textContent = apiBase;
     renderToken();
   }
+  browsingAvailable = !!st.browsing_available;
+  renderBrowseToggle();
   runningKey = st.running_key;
   launching = st.launching;
   renderChatHeader();
@@ -984,6 +987,9 @@ function renderMessageInto(wrap, m) {
     }
   } else {
     bubble.textContent = "";
+    if (m.browsing && m.browsing.length) {
+      bubble.appendChild(renderBrowsing(wrap, m));
+    }
     if (m.reasoning) {
       const det = document.createElement("details");
       det.className = "reasoning";
@@ -1159,6 +1165,7 @@ async function generate(chat) {
       body: JSON.stringify({
         model: "default",
         stream: true,
+        browsing: browsingEnabled(),
         // history minus the empty assistant placeholder just appended
         messages: apiMessages({ ...chat, messages: chat.messages.slice(0, -1) }),
         max_tokens: s.max_tokens || 8192,
@@ -1180,16 +1187,34 @@ async function generate(chat) {
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop();
+      let browsingChanged = false;
       for (const line of lines) {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (data === "[DONE]") continue;
-        let delta;
-        try { delta = JSON.parse(data).choices[0].delta; } catch { continue; }
+        let obj;
+        try { obj = JSON.parse(data); } catch { continue; }
+        if (obj.browsing) {
+          (assistantMsg.browsing ??= []).push(obj.browsing);
+          browsingChanged = true;
+          continue;
+        }
+        if (obj.error && obj.error.message) {
+          assistantMsg.error = obj.error.message;
+          continue;
+        }
+        const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
+        if (!delta) continue;
         if (delta.content) assistantMsg.text += delta.content;
         // field renamed across vLLM versions — accept both
         const r = delta.reasoning_content ?? delta.reasoning;
         if (r) assistantMsg.reasoning += r;
+      }
+      if (browsingChanged) {   // activity rows render immediately, unthrottled
+        const stick = nearBottom();
+        renderMessageInto(el, assistantMsg);
+        if (stick) box.scrollTop = box.scrollHeight;
+        lastDraw = performance.now();
       }
       const now = performance.now();
       if (now - lastDraw > 80) {   // throttle re-renders during fast streams
@@ -1211,6 +1236,83 @@ async function generate(chat) {
     renderMessageInto(el, assistantMsg);
     saveChats();
   }
+}
+
+// ─── web browsing toggle ───────────────────────────────────────────────────
+
+function browsingEnabled() {
+  return browsingAvailable && chatSettings().browsing !== false;
+}
+
+function renderBrowseToggle() {
+  const btn = $("browse-toggle");
+  btn.disabled = !browsingAvailable;
+  btn.title = browsingAvailable
+    ? "Let the model search and read the web (obscura)"
+    : "Web browsing unavailable — obscura image not pulled (see run-ui.sh)";
+  btn.setAttribute("aria-pressed", String(browsingEnabled()));
+  btn.classList.toggle("toggled-on", browsingEnabled());
+}
+
+$("browse-toggle").addEventListener("click", () => {
+  const s = chatSettings();
+  s.browsing = !(s.browsing !== false);
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  renderBrowseToggle();
+});
+
+function renderBrowsing(wrap, m) {
+  // activity block above the assistant content: one row per tool call,
+  // spinner while a start has no matching result, expandable debug logs.
+  // Everything is set via textContent — fetched data never becomes HTML.
+  const box = document.createElement("div");
+  box.className = "browse-activity";
+  const events = m.browsing || [];
+  const starts = events.filter((e) => e.event === "tool_start");
+  const results = events.filter((e) => e.event === "tool_result");
+  starts.forEach((e, i) => {
+    const row = document.createElement("div");
+    row.className = "browse-row";
+    const what = document.createElement("span");
+    what.className = "browse-what";
+    what.textContent = e.tool === "web_search"
+      ? `Searched: ${e.args.query ?? ""}`
+      : `Fetched: ${e.args.url ?? ""}`;
+    row.appendChild(what);
+    const res = results[i];
+    const status = document.createElement("span");
+    status.className = "browse-status";
+    if (!res) {
+      status.textContent = "…";
+      status.classList.add("busy");
+    } else {
+      status.textContent = res.ok
+        ? `${res.preview}${res.duration ? ` · ${res.duration}s` : ""}`
+        : `failed: ${res.preview}`;
+      if (!res.ok) status.classList.add("bad");
+    }
+    row.appendChild(status);
+    box.appendChild(row);
+  });
+  for (const e of events.filter((ev) => ev.event === "error")) {
+    const row = document.createElement("div");
+    row.className = "browse-row browse-error";
+    row.textContent = e.message;
+    box.appendChild(row);
+  }
+  const debugLines = results.flatMap((r) => r.debug || []);
+  if (debugLines.length) {
+    const det = document.createElement("details");
+    det.className = "browse-debug";
+    const sum = document.createElement("summary");
+    sum.textContent = `Browsing debug log (${debugLines.length} lines)`;
+    const pre = document.createElement("pre");
+    pre.className = "log small";
+    pre.textContent = debugLines.join("\n");
+    det.append(sum, pre);
+    box.appendChild(det);
+  }
+  return box;
 }
 
 $("send-btn").addEventListener("click", sendMessage);

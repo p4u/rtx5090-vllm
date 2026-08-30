@@ -142,6 +142,15 @@ What it does:
   container, `nvidia-smi` details, and a follow-mode log panel.
 - **API access panel** — a single bearer token for the OpenAI API, with
   show/copy/**renew** (renewing invalidates the old token instantly).
+- **Web browsing in chat** — the model can search the web and read pages,
+  powered by [obscura](https://github.com/h4ckf0r0day/obscura) (a headless
+  browser engine; one throwaway `docker run` per fetch — `run-ui.sh` pulls the
+  image). On by default via the `Web` toggle in the composer; tool calls show
+  as an inline activity block (queries, URLs, durations) with an expandable
+  browsing debug log (obscura's tracing output). Search uses DuckDuckGo's
+  HTML endpoint; obscura's private-network/SSRF protection is intentionally
+  left on, and fetched content is treated as untrusted data. Requires a model
+  with an active `--tool-call-parser` (all lineup models qualify).
 - **Chat tab** — a ChatGPT-style chat with whatever model is running:
   streamed responses with markdown rendering, collapsible reasoning for
   thinking models, multiple conversations (kept in your browser's

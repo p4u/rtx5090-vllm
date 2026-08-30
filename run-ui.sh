@@ -63,6 +63,11 @@ mkdir -p "$SCRIPT_DIR/ui/data"
 echo ">>> building vllm-ui image..."
 docker build -q -t vllm-ui "$SCRIPT_DIR/ui" >/dev/null
 
+# obscura powers the chat's web-browsing tools (one `docker run --rm` per
+# search/fetch). Missing image = browsing shows as unavailable, UI still runs.
+docker pull -q h4ckf0r0day/obscura >/dev/null 2>&1 \
+  || echo ">>> warning: could not pull h4ckf0r0day/obscura — chat web browsing will be unavailable" >&2
+
 docker rm -f vllm-ui >/dev/null 2>&1 || true
 
 docker run -d \

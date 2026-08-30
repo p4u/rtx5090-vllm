@@ -476,6 +476,28 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
 .bubble th, .bubble td { border: 1px solid var(--line); padding: 4px 10px; font-size: 13px; }
 .bubble th { font: 600 10.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-mut); }
 
+/* browsing activity */
+#browse-toggle.toggled-on { color: var(--amber); border-color: var(--amber); }
+.browse-activity {
+  border-left: 2px solid var(--amber);
+  background: var(--bg1);
+  border-radius: 0 3px 3px 0;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font: 12px/1.7 var(--mono);
+}
+.browse-row { display: flex; gap: 10px; align-items: baseline; }
+.browse-what { color: var(--ink-mut); overflow-wrap: anywhere; }
+.browse-status { color: var(--ink-faint); white-space: nowrap; flex: none; }
+.browse-status.busy { color: var(--busy); animation: led-pulse 1.2s infinite; }
+.browse-status.bad { color: var(--bad); }
+.browse-error { color: var(--busy); }
+.browse-debug summary {
+  cursor: pointer; user-select: none;
+  font: 600 10px/1.8 var(--mono); letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+
 /* reasoning fold */
 .reasoning {
   border-left: 2px dashed var(--line);

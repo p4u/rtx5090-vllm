@@ -101,7 +101,14 @@ non-root). Password gate = `UI_PASSWORD` env; the OpenAI API is re-served at
 `:8090/v1` behind a single bearer token (state in `ui/data/state.json`,
 gitignored). The Monitor tab's history charts are fed by an in-memory 5s
 sampler in `app.py` (`HISTORY` ring, last hour — cleared on UI restart by
-design). The image is code-free (deps + docker CLI + iproute2 only) — the app runs
+design). Chat web browsing (`ui/browse.py`): `/api/chat` with
+`"browsing": true` runs a server-side tool loop — `web_search`/`web_fetch`
+tools injected, executed as per-call `docker run --rm h4ckf0r0day/obscura`,
+activity + debug streamed as `{"browsing": …}` SSE events. Obscura's
+private-network SSRF protection is intentionally left on (never set
+`OBSCURA_ALLOW_PRIVATE_NETWORK`); tool calling requires the model's
+`--tool-call-parser`; completed turns replay flattened (assistant text only,
+no historical tool messages). The image is code-free (deps + docker CLI + iproute2 only) — the app runs
 from the mounted `ui/`, so it can't drift from `run.sh` across rebuilds; a
 `docker restart vllm-ui` picks up code changes, no rebuild needed. The Chat
 tab talks to the running model through session-gated `/api/chat` (the browser
