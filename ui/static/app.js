@@ -1075,6 +1075,25 @@ function renderChatHeader() {
 
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// The chat re-renders message DOM during streaming (every ~80ms) and again
+// on completion — naively that recreates every <details> fold CLOSED, so an
+// open "Reasoning" fold vanished under the user's cursor. Every fold gets a
+// stable data-fold key; renders capture which keys are open beforehand and
+// restore them afterwards.
+function captureFolds(root) {
+  const open = new Set();
+  root.querySelectorAll("details[data-fold]").forEach((d) => {
+    if (d.open) open.add(d.dataset.fold);
+  });
+  return open;
+}
+
+function restoreFolds(root, open) {
+  root.querySelectorAll("details[data-fold]").forEach((d) => {
+    if (open.has(d.dataset.fold)) d.open = true;
+  });
+}
+
 function msgEl(role, streaming = false) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -1175,6 +1194,7 @@ function startEditMessage(wrap, m, chat, idx) {
 }
 
 function renderMessageInto(wrap, m) {
+  const openFolds = captureFolds(wrap);
   const bubble = wrap.querySelector(".bubble");
   if (m.role === "user") {
     bubble.textContent = m.text;
@@ -1204,6 +1224,7 @@ function renderMessageInto(wrap, m) {
     if (m.reasoning) {
       const det = document.createElement("details");
       det.className = "reasoning";
+      det.dataset.fold = `r${m.ts || 0}`;
       const sum = document.createElement("summary");
       sum.textContent = "Reasoning";
       const body = document.createElement("div");
@@ -1222,10 +1243,12 @@ function renderMessageInto(wrap, m) {
       bubble.appendChild(err);
     }
   }
+  restoreFolds(wrap, openFolds);
 }
 
 function renderMessages() {
   const box = $("chat-messages");
+  const openFolds = captureFolds(box);
   box.textContent = "";
   const chat = activeChat();
   $("chat-empty").hidden = !!(chat && (chat.messages.length || chat.compact_summary));
@@ -1233,6 +1256,7 @@ function renderMessages() {
   if (chat.compact_summary) {
     const marker = document.createElement("details");
     marker.className = "compact-marker";
+    marker.dataset.fold = "compact";
     const sum = document.createElement("summary");
     sum.textContent = `— conversation compacted (${chat.compacted_n || "?"} earlier ` +
                       "messages summarized into context) —";
@@ -1249,6 +1273,7 @@ function renderMessages() {
     el.appendChild(msgActions(el, m, chat, idx));
     box.appendChild(el);
   });
+  restoreFolds(box, openFolds);
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1681,6 +1706,7 @@ function renderBrowsing(wrap, m) {
       // per-run fold: the code that ran + its stdout
       const det = document.createElement("details");
       det.className = "browse-debug";
+      det.dataset.fold = `c${m.ts || 0}-${i}`;
       const sum = document.createElement("summary");
       sum.textContent = "Code & output";
       det.appendChild(sum);
@@ -1719,6 +1745,7 @@ function renderBrowsing(wrap, m) {
   if (debugLines.length) {
     const det = document.createElement("details");
     det.className = "browse-debug";
+    det.dataset.fold = `d${m.ts || 0}`;
     const sum = document.createElement("summary");
     sum.textContent = `Browsing debug log (${debugLines.length} lines)`;
     const pre = document.createElement("pre");
