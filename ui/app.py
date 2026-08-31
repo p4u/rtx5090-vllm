@@ -58,6 +58,20 @@ def public_api_base() -> str | None:
     return f"http://{UI_DOMAIN}:{UI_PORT}/v1"
 
 app = FastAPI(title="vllm-ui", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def _no_stale_assets(request: Request, call_next):
+    """The app has no build step and its JS is split across files that must
+    match (md.js/app.js) — a browser caching one but not the other after a
+    deploy runs a broken mix (seen in the field: reasoning folds vanished).
+    no-cache = browsers may store but MUST revalidate; StaticFiles serves
+    ETags, so unchanged files cost a 304, changed files arrive immediately."""
+    resp = await call_next(request)
+    p = request.url.path
+    if p == "/" or p.startswith("/static/") or p.startswith("/share/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
 launcher = vllm_mgr.Launcher()
 _signer = TimestampSigner(state.load()["session_secret"])
 
