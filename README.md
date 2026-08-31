@@ -151,6 +151,14 @@ What it does:
   HTML endpoint; obscura's private-network/SSRF protection is intentionally
   left on, and fetched content is treated as untrusted data. Requires a model
   with an active `--tool-call-parser` (all lineup models qualify).
+- **Python execution in chat** — a `Py` toggle (on by default) gives the
+  model a `run_python` tool: each call executes in a throwaway sandbox
+  container (`vllm-pysandbox`, built by `run-ui.sh`) with numpy, pandas,
+  matplotlib, scipy, sympy, pillow and networkx baked in — **no network,
+  read-only rootfs, 1 GB/2-cpu/30 s limits**, run as nobody. Open matplotlib
+  figures are captured automatically and rendered inline in the chat
+  (ChatGPT-style); the model sees stdout/stderr, the human sees the charts.
+  Each run's code and output sit in a collapsible fold.
 - **Chat tab** — a ChatGPT-style chat with whatever model is running:
   streamed responses with markdown rendering, collapsible reasoning for
   thinking models, multiple conversations (kept in your browser's

@@ -528,6 +528,11 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
 .browse-status.busy { color: var(--busy); animation: led-pulse 1.2s infinite; }
 .browse-status.bad { color: var(--bad); }
 .browse-error { color: var(--busy); }
+.browse-figures { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
+.browse-figures img {
+  max-width: min(100%, 560px); border-radius: 4px;
+  border: 1px solid var(--line); background: #fff;
+}
 .browse-debug summary {
   cursor: pointer; user-select: none;
   font: 600 10px/1.8 var(--mono); letter-spacing: .08em;

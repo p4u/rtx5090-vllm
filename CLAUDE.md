@@ -108,7 +108,12 @@ activity + debug streamed as `{"browsing": …}` SSE events. Obscura's
 private-network SSRF protection is intentionally left on (never set
 `OBSCURA_ALLOW_PRIVATE_NETWORK`); tool calling requires the model's
 `--tool-call-parser`; completed turns replay flattened (assistant text only,
-no historical tool messages). The image is code-free (deps + docker CLI + iproute2 only) — the app runs
+no historical tool messages). Python execution (`ui/pyexec.py` +
+`ui/sandbox/`): the same loop's `run_python` tool, one throwaway
+`vllm-pysandbox` container per call — `--network none`, read-only rootfs,
+resource caps, 30s timeout; libraries are baked into the image because pip
+at runtime is impossible by design. Figures auto-save (runner.py) and stream
+to the frontend as data URLs; the model only gets text. The image is code-free (deps + docker CLI + iproute2 only) — the app runs
 from the mounted `ui/`, so it can't drift from `run.sh` across rebuilds; a
 `docker restart vllm-ui` picks up code changes, no rebuild needed. The Chat
 tab talks to the running model through session-gated `/api/chat` (the browser

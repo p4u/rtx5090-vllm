@@ -18,6 +18,7 @@ let tokenVisible = false;
 let tokenValue = null;
 let apiBase = location.origin + "/v1";   // overridden by UI_DOMAIN via /api/state
 let browsingAvailable = false;           // obscura image present (from /api/state)
+let pythonAvailable = false;             // vllm-pysandbox image present
 
 // ─── tiny fetch helpers ────────────────────────────────────────────────────
 
@@ -123,7 +124,9 @@ async function pollState() {
     renderToken();
   }
   browsingAvailable = !!st.browsing_available;
+  pythonAvailable = !!st.python_available;
   renderBrowseToggle();
+  renderPyToggle();
   runningKey = st.running_key;
   launching = st.launching;
   renderChatHeader();
@@ -1016,10 +1019,13 @@ function chatToMarkdown(c) {
     } else {
       lines.push(`## ${m.model || "Assistant"}${when}`, "");
       for (const b of m.browsing || []) {
-        if (b.event === "tool_start")
-          lines.push(b.tool === "web_search"
-            ? `*Searched the web: ${b.args.query ?? ""}*`
-            : `*Fetched: ${b.args.url ?? ""}*`);
+        if (b.event !== "tool_start") continue;
+        if (b.tool === "web_search")
+          lines.push(`*Searched the web: ${b.args.query ?? ""}*`);
+        else if (b.tool === "run_python")
+          lines.push("*Ran Python:*", "", "```python", b.args.code ?? "", "```");
+        else
+          lines.push(`*Fetched: ${b.args.url ?? ""}*`);
       }
       if ((m.browsing || []).length) lines.push("");
       if (m.reasoning)
@@ -1416,6 +1422,7 @@ async function generate(chat) {
         model: "default",
         stream: true,
         browsing: browsingEnabled(),
+        python: pyEnabled(),
         // history minus the empty assistant placeholder just appended
         messages: apiMessages({ ...chat, messages: chat.messages.slice(0, -1) }),
         max_tokens: s.max_tokens || 8192,
@@ -1519,6 +1526,27 @@ $("browse-toggle").addEventListener("click", () => {
   renderBrowseToggle();
 });
 
+function pyEnabled() {
+  return pythonAvailable && chatSettings().python !== false;
+}
+
+function renderPyToggle() {
+  const btn = $("py-toggle");
+  btn.disabled = !pythonAvailable;
+  btn.title = pythonAvailable
+    ? "Let the model run Python in a sandbox (numpy, pandas, matplotlib…)"
+    : "Python sandbox unavailable — image not built (see run-ui.sh)";
+  btn.setAttribute("aria-pressed", String(pyEnabled()));
+  btn.classList.toggle("toggled-on", pyEnabled());
+}
+
+$("py-toggle").addEventListener("click", () => {
+  const s = chatSettings();
+  s.python = !(s.python !== false);
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  renderPyToggle();
+});
+
 function renderBrowsing(wrap, m) {
   // activity block above the assistant content: one row per tool call,
   // spinner while a start has no matching result, expandable debug logs.
@@ -1535,7 +1563,9 @@ function renderBrowsing(wrap, m) {
     what.className = "browse-what";
     what.textContent = e.tool === "web_search"
       ? `Searched: ${e.args.query ?? ""}`
-      : `Fetched: ${e.args.url ?? ""}`;
+      : e.tool === "run_python"
+        ? "Ran Python"
+        : `Fetched: ${e.args.url ?? ""}`;
     row.appendChild(what);
     const res = results[i];
     const status = document.createElement("span");
@@ -1551,6 +1581,37 @@ function renderBrowsing(wrap, m) {
     }
     row.appendChild(status);
     box.appendChild(row);
+    if (e.tool === "run_python") {
+      // per-run fold: the code that ran + its stdout
+      const det = document.createElement("details");
+      det.className = "browse-debug";
+      const sum = document.createElement("summary");
+      sum.textContent = "Code & output";
+      det.appendChild(sum);
+      const codePre = document.createElement("pre");
+      codePre.className = "log small";
+      codePre.textContent = e.args.code ?? "";
+      det.appendChild(codePre);
+      if (res && res.stdout) {
+        const outPre = document.createElement("pre");
+        outPre.className = "log small";
+        outPre.textContent = res.stdout;
+        det.appendChild(outPre);
+      }
+      box.appendChild(det);
+    }
+    if (res && res.images && res.images.length) {
+      const figs = document.createElement("div");
+      figs.className = "browse-figures";
+      for (const src of res.images) {
+        if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(src)) continue;
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "generated figure";
+        figs.appendChild(img);
+      }
+      box.appendChild(figs);
+    }
   });
   for (const e of events.filter((ev) => ev.event === "error")) {
     const row = document.createElement("div");

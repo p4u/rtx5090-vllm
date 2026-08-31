@@ -137,6 +137,12 @@ docker build -q -t vllm-ui "$SCRIPT_DIR/ui" >/dev/null
 docker pull -q h4ckf0r0day/obscura >/dev/null 2>&1 \
   || echo ">>> warning: could not pull h4ckf0r0day/obscura — chat web browsing will be unavailable" >&2
 
+# vllm-pysandbox powers the chat's run_python tool (one throwaway no-network
+# container per execution; numpy/pandas/matplotlib/scipy/sympy baked in).
+# Missing image = the Py toggle shows as unavailable, UI still runs.
+docker build -q -t vllm-pysandbox "$SCRIPT_DIR/ui/sandbox" >/dev/null \
+  || echo ">>> warning: could not build vllm-pysandbox — chat Python execution will be unavailable" >&2
+
 docker rm -f vllm-ui >/dev/null 2>&1 || true
 
 docker run -d \

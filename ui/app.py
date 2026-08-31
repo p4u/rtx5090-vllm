@@ -28,6 +28,7 @@ from itsdangerous import BadSignature, TimestampSigner
 from starlette.background import BackgroundTask
 
 import browse
+import pyexec
 import state
 import vllm_mgr
 
@@ -246,6 +247,7 @@ async def api_state(request: Request):
     result = {
         "api_base": public_api_base(),
         "browsing_available": await browse.available(),
+        "python_available": await pyexec.available(),
         "running_key": vllm_mgr.container_model_key(info, run_models) if info else None,
         "container": None,
         "healthy": healthy,
@@ -553,24 +555,36 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-async def _agent_loop(base: str, info: dict | None, payload: dict):
-    """Server-side browsing loop: stream a round from vLLM, forward its SSE
-    lines verbatim; when the model calls tools, run them via obscura, emit
-    {"browsing": …} activity events, append the tool results, and go again.
-    One [DONE] at the true end. Frontend distinguishes activity events from
-    OpenAI chunks by the "browsing" key."""
+async def _agent_loop(base: str, info: dict | None, payload: dict,
+                      use_browsing: bool, use_python: bool):
+    """Server-side tool loop: stream a round from vLLM, forward its SSE lines
+    verbatim; when the model calls tools, run them (obscura for the web,
+    vllm-pysandbox for run_python), emit {"browsing": …} activity events, and
+    go again. One [DONE] at the true end. Frontend distinguishes activity
+    events from OpenAI chunks by the "browsing" key (historic name — it
+    carries all tool activity)."""
     payload["stream"] = True
-    if await browse.available():
-        payload["tools"] = browse.TOOLS
-        payload["tool_choice"] = "auto"
-        msgs = payload.setdefault("messages", [])
-        if msgs and msgs[0].get("role") == "system":
-            msgs[0]["content"] = f"{msgs[0]['content']}\n{UNTRUSTED_WEB_NOTE}"
+    tools = []
+    if use_browsing:
+        if await browse.available():
+            tools += browse.TOOLS
+            msgs = payload.setdefault("messages", [])
+            if msgs and msgs[0].get("role") == "system":
+                msgs[0]["content"] = f"{msgs[0]['content']}\n{UNTRUSTED_WEB_NOTE}"
+            else:
+                msgs.insert(0, {"role": "system", "content": UNTRUSTED_WEB_NOTE})
         else:
-            msgs.insert(0, {"role": "system", "content": UNTRUSTED_WEB_NOTE})
-    else:
-        yield _sse({"browsing": {"event": "error",
-                                 "message": "obscura image not available — answering without web access"}})
+            yield _sse({"browsing": {"event": "error",
+                                     "message": "obscura image not available — answering without web access"}})
+    if use_python:
+        if await pyexec.available():
+            tools.append(pyexec.TOOL)
+        else:
+            yield _sse({"browsing": {"event": "error",
+                                     "message": "python sandbox image not built — answering without code execution"}})
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     headers = {"Content-Type": "application/json", **_upstream_auth(info)}
 
     MAX_ROUNDS = 6
@@ -656,20 +670,31 @@ async def _agent_loop(base: str, info: dict | None, payload: dict):
                                          "args": args or {}, "round": round_no}})
                 if args is None:
                     result = {"error": "invalid arguments JSON — retry with valid JSON"}
+                elif name == "run_python":
+                    result = await pyexec.run_python(args)
                 else:
                     result = await browse.run_tool(name, args)
-                # activity event keeps debug/duration; the model doesn't see them
+                # activity event keeps debug/duration/images; the model gets
+                # text only (figures_note tells it charts were displayed)
                 model_result = {k: v for k, v in result.items()
-                                if k not in ("debug", "duration")}
-                preview = (f"{len(result['results'])} results"
-                           if isinstance(result.get("results"), list)
-                           else (result.get("title") or result.get("error")
-                                 or json.dumps(model_result)[:120]))
+                                if k not in ("debug", "duration", "images")}
+                if name == "run_python":
+                    n_figs = len(result.get("images", []))
+                    preview = (result.get("error")
+                               or (f"{n_figs} figure(s)" if n_figs else "")
+                               or (result.get("stdout", "").strip().splitlines() or ["ok"])[-1])
+                else:
+                    preview = (f"{len(result['results'])} results"
+                               if isinstance(result.get("results"), list)
+                               else (result.get("title") or result.get("error")
+                                     or json.dumps(model_result)[:120]))
                 yield _sse({"browsing": {
                     "event": "tool_result", "tool": name, "round": round_no,
                     "ok": "error" not in result, "preview": str(preview)[:200],
                     "duration": result.get("duration"),
                     "bytes": len(json.dumps(model_result)),
+                    "images": result.get("images", []),
+                    "stdout": (result.get("stdout") or "")[:2000] if name == "run_python" else None,
                     "debug": result.get("debug", [])[-15:]}})
                 result = model_result
             payload["messages"].append({"role": "tool", "tool_call_id": call["id"],
@@ -685,8 +710,9 @@ async def _agent_loop(base: str, info: dict | None, payload: dict):
 async def api_chat(request: Request):
     """Streaming chat completion for the UI's chat tab. Same upstream as the
     /v1 proxy but gated by the login session instead of the API token, so the
-    browser never handles the bearer token. With "browsing": true in the
-    body, runs the obscura tool loop; otherwise a byte-exact passthrough."""
+    browser never handles the bearer token. With "browsing" and/or "python"
+    true in the body, runs the tool loop (obscura web + python sandbox);
+    otherwise a byte-exact passthrough."""
     require_session(request)
     base, info = await _upstream()
     if not base:
@@ -698,10 +724,14 @@ async def api_chat(request: Request):
         payload = json.loads(body)
     except json.JSONDecodeError:
         payload = None
-    if isinstance(payload, dict) and payload.pop("browsing", False):
-        return StreamingResponse(
-            _agent_loop(base, info, payload), media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"})
+    if isinstance(payload, dict):
+        use_browsing = bool(payload.pop("browsing", False))
+        use_python = bool(payload.pop("python", False))
+        if use_browsing or use_python:
+            return StreamingResponse(
+                _agent_loop(base, info, payload, use_browsing, use_python),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"})
     upstream_req = client.build_request(
         "POST", f"{base}/v1/chat/completions",
         headers={"Content-Type": "application/json", **_upstream_auth(info)},
