@@ -723,6 +723,7 @@ async def _agent_loop(base: str, info: dict | None, payload: dict,
         # stream the round; accumulate content + fragmented tool_call deltas
         acc: dict[int, dict] = {}
         content_parts: list[str] = []
+        finish = None
         try:
             async for line in upstream.aiter_lines():
                 if not line.startswith("data:"):
@@ -735,6 +736,8 @@ async def _agent_loop(base: str, info: dict | None, payload: dict,
                     ch = (json.loads(data).get("choices") or [{}])[0]
                 except (json.JSONDecodeError, AttributeError, IndexError):
                     continue
+                if ch.get("finish_reason"):
+                    finish = ch["finish_reason"]
                 delta = ch.get("delta") or {}
                 if delta.get("content"):
                     content_parts.append(delta["content"])
@@ -753,27 +756,60 @@ async def _agent_loop(base: str, info: dict | None, payload: dict,
             yield "data: [DONE]\n\n"
             return
 
-        calls = [{"id": s["id"] or f"call_{i}", "type": "function",
-                  "function": {"name": s["name"], "arguments": s["arguments"]}}
-                 for i, s in sorted(acc.items())]
+        # Prevalidate every accumulated call. A truncated stream (usually
+        # finish_reason "length": max_tokens ran out mid-arguments) leaves
+        # unterminated JSON — replaying that verbatim makes vLLM 400 on the
+        # NEXT request ("Unterminated string…") and kills the whole loop, so
+        # the model never gets to retry. Replay sanitized arguments ("{}")
+        # instead and hand the model an error result that says what to do.
+        TRUNCATED_HINT = (
+            " The response was cut off by the max_tokens limit mid-call — "
+            "re-issue the tool call more compactly (shorter code/arguments)."
+            if finish == "length" else
+            " Re-issue the complete tool call with valid JSON arguments.")
+        prevalidated = []   # (call_for_replay, parsed_args_or_None)
+        for i, slot in sorted(acc.items()):
+            name = slot["name"].strip()
+            if not name:
+                continue          # truncated before the name — nothing usable
+            try:
+                parsed = json.loads(slot["arguments"] or "{}")
+                if not isinstance(parsed, dict):
+                    raise ValueError
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            prevalidated.append((
+                {"id": slot["id"] or f"call_{i}", "type": "function",
+                 "function": {"name": name,
+                              "arguments": slot["arguments"] if parsed is not None else "{}"}},
+                parsed))
+        if not prevalidated:
+            # everything was truncated garbage — replay only the prose and
+            # ask for a clean retry via a synthetic user note (template-safe)
+            yield _sse({"browsing": {"event": "error",
+                                     "message": "tool call arrived truncated — asking the model to retry"}})
+            if "".join(content_parts):
+                payload["messages"].append({"role": "assistant",
+                                            "content": "".join(content_parts)})
+            payload["messages"].append({"role": "user", "content":
+                "[automated] Your tool call was truncated or malformed and was "
+                "discarded." + TRUNCATED_HINT})
+            round_no += 1
+            continue
+        calls = [c for c, _ in prevalidated]
         payload["messages"].append({"role": "assistant",
                                     "content": "".join(content_parts) or None,
                                     "tool_calls": calls})
-        for n, call in enumerate(calls):
+        for n, (call, args) in enumerate(prevalidated):
             name = call["function"]["name"]
             if n >= 4:
                 result = {"error": "too many tool calls in one round"}
             else:
-                try:
-                    args = json.loads(call["function"]["arguments"] or "{}")
-                    if not isinstance(args, dict):
-                        raise ValueError
-                except (json.JSONDecodeError, ValueError):
-                    args = None
                 yield _sse({"browsing": {"event": "tool_start", "tool": name,
                                          "args": args or {}, "round": round_no}})
                 if args is None:
-                    result = {"error": "invalid arguments JSON — retry with valid JSON"}
+                    result = {"error": "tool arguments were invalid or "
+                                       "truncated JSON." + TRUNCATED_HINT}
                 elif name == "run_python":
                     result = await pyexec.run_python(args)
                 else:

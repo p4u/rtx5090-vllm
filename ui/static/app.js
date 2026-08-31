@@ -1382,7 +1382,7 @@ async function generate(chat) {
         python: pyEnabled(),
         // history minus the empty assistant placeholder just appended
         messages: apiMessages({ ...chat, messages: chat.messages.slice(0, -1) }),
-        max_tokens: s.max_tokens || 8192,
+        max_tokens: s.max_tokens || 16384,
         stream_options: { include_usage: true },
         ...(s.temperature !== undefined ? { temperature: s.temperature } : {}),
       }),
