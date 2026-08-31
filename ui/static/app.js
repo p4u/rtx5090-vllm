@@ -994,6 +994,41 @@ function restoreFolds(root, open) {
   });
 }
 
+// Reasoning bodies scroll internally (max-height fold). Rebuilding the DOM
+// reset that scroll to the top every ~80ms tick, so an open fold could not
+// be watched while streaming. Capture per-fold scroll (and whether the
+// reader was following the bottom) before a rebuild; restore after —
+// sticking to the newest text while it grows.
+function captureFoldScrolls(root) {
+  const m = {};
+  root.querySelectorAll("details[data-fold] .r-body").forEach((b) => {
+    const key = b.closest("details").dataset.fold;
+    m[key] = { top: b.scrollTop,
+               stick: b.scrollHeight - b.scrollTop - b.clientHeight < 40 };
+  });
+  return m;
+}
+
+function restoreFoldScrolls(root, m) {
+  root.querySelectorAll("details[data-fold] .r-body").forEach((b) => {
+    const det = b.closest("details");
+    if (!det.open) return;
+    const s = m[det.dataset.fold];
+    if (!s || s.stick) b.scrollTop = b.scrollHeight;   // follow the tail
+    else b.scrollTop = s.top;                          // reader is reading
+  });
+}
+
+// opening a fold mid-stream jumps straight to the newest text ('toggle'
+// does not bubble — capture phase on the container)
+document.addEventListener("toggle", (e) => {
+  const det = e.target;
+  if (det.tagName === "DETAILS" && det.open) {
+    const body = det.querySelector(".r-body");
+    if (body) body.scrollTop = body.scrollHeight;
+  }
+}, true);
+
 function msgEl(role, streaming = false) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -1095,6 +1130,7 @@ function startEditMessage(wrap, m, chat, idx) {
 
 function renderMessageInto(wrap, m) {
   const openFolds = captureFolds(wrap);
+  const foldScrolls = captureFoldScrolls(wrap);
   const bubble = wrap.querySelector(".bubble");
   if (m.role === "user") {
     bubble.textContent = m.text;
@@ -1144,11 +1180,13 @@ function renderMessageInto(wrap, m) {
     }
   }
   restoreFolds(wrap, openFolds);
+  restoreFoldScrolls(wrap, foldScrolls);
 }
 
 function renderMessages() {
   const box = $("chat-messages");
   const openFolds = captureFolds(box);
+  const foldScrolls = captureFoldScrolls(box);
   box.textContent = "";
   const chat = activeChat();
   $("chat-empty").hidden = !!(chat && (chat.messages.length || chat.compact_summary));
@@ -1174,6 +1212,7 @@ function renderMessages() {
     box.appendChild(el);
   });
   restoreFolds(box, openFolds);
+  restoreFoldScrolls(box, foldScrolls);
   box.scrollTop = box.scrollHeight;
   renderSharePanel();
 }
@@ -1764,10 +1803,49 @@ $("send-btn").addEventListener("click", sendMessage);
 $("stop-gen-btn").addEventListener("click", () => genAbort && genAbort.abort());
 $("new-chat-btn").addEventListener("click", newChat);
 
+// shell-style input history: Up recalls previous messages of this chat
+// (only from the very start of the input, so multiline editing keeps its
+// normal cursor behavior), Down walks back toward the unsent draft.
+let histIdx = -1;
+let histDraft = "";
+
+function histList() {
+  const chat = activeChat();
+  return chat ? chat.messages.filter((m) => m.role === "user").map((m) => m.text) : [];
+}
+
+function histSet(input, value) {
+  input.value = value;
+  input.setSelectionRange(value.length, value.length);
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 200) + "px";
+}
+
 $("chat-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    histIdx = -1;
+    sendMessage();
+    return;
+  }
+  const input = e.target;
+  const atStart = input.selectionStart === 0 && input.selectionEnd === 0;
+  if (e.key === "ArrowUp" && (atStart || input.value === "")) {
+    const hist = histList();
+    if (!hist.length) return;
+    e.preventDefault();
+    if (histIdx === -1) histDraft = input.value;
+    if (histIdx < hist.length - 1) histIdx++;
+    histSet(input, hist[hist.length - 1 - histIdx]);
+  } else if (e.key === "ArrowDown" && histIdx !== -1 && atStart) {
+    const hist = histList();
+    e.preventDefault();
+    histIdx--;
+    histSet(input, histIdx === -1 ? histDraft : hist[hist.length - 1 - histIdx]);
+  }
 });
 $("chat-input").addEventListener("input", (e) => {
+  histIdx = -1;
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
 });
