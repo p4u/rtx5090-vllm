@@ -1340,7 +1340,10 @@ function bindSettings() {
   $("set-max-tokens").value = s.max_tokens ?? "";
   for (const id of ["set-system", "set-temperature", "set-max-tokens"]) {
     $(id).addEventListener("change", () => {
+      // merge over existing settings — this must not wipe the Web/Py
+      // toggle preferences stored under the same key
       localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        ...chatSettings(),
         system: $("set-system").value || undefined,
         temperature: $("set-temperature").value ? +$("set-temperature").value : undefined,
         max_tokens: $("set-max-tokens").value ? +$("set-max-tokens").value : undefined,
