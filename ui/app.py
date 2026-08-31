@@ -432,6 +432,110 @@ async def api_token_renew(request: Request):
     return {"token": state.renew_token()}
 
 
+# ─── chat sharing ───────────────────────────────────────────────────────────
+# A share is a server-side copy of a chat under an unguessable id
+# (secrets.token_urlsafe(24) → 32 chars, ~192 bits). The viewer page and its
+# data endpoint are PUBLIC — possession of the URL is the credential — while
+# create/update/delete stay session-gated. With live=true the owner's browser
+# keeps pushing updates and viewers poll until the share goes static.
+
+SHARES_DIR = vllm_mgr.REPO_DIR / "ui" / "data" / "shares"
+SHARE_MAX_BYTES = 15 * 1024 * 1024
+SHARE_MAX_COUNT = 200
+_SHARE_ID_RE = __import__("re").compile(r"^[A-Za-z0-9_-]{20,60}$")
+
+
+def _share_path(share_id: str):
+    if not _SHARE_ID_RE.fullmatch(share_id):
+        raise HTTPException(404, "not found")
+    return SHARES_DIR / f"{share_id}.json"
+
+
+def _load_share(share_id: str) -> dict:
+    try:
+        return json.loads(_share_path(share_id).read_text())
+    except (OSError, json.JSONDecodeError):
+        raise HTTPException(404, "not found")
+
+
+def _save_share(share: dict) -> None:
+    SHARES_DIR.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps(share)
+    if len(raw) > SHARE_MAX_BYTES:
+        raise HTTPException(413, "share too large (15 MB cap — heavy images?)")
+    path = _share_path(share["id"])
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(raw)
+    os.replace(tmp, path)
+
+
+def _share_url(share_id: str) -> str:
+    base = public_api_base()
+    if base:
+        return base.rsplit("/v1", 1)[0] + f"/share/{share_id}"
+    return f"/share/{share_id}"
+
+
+@app.post("/api/share")
+async def api_share_create(request: Request):
+    require_session(request)
+    SHARES_DIR.mkdir(parents=True, exist_ok=True)
+    if len(list(SHARES_DIR.glob("*.json"))) >= SHARE_MAX_COUNT:
+        raise HTTPException(507, f"too many shares (max {SHARE_MAX_COUNT}) — revoke some")
+    body = await request.json()
+    import secrets as _secrets
+    share = {"id": _secrets.token_urlsafe(24),
+             "title": str(body.get("title", "Shared chat"))[:120],
+             "live": bool(body.get("live", False)),
+             "messages": body.get("messages") or [],
+             "created": time.time(), "updated": time.time()}
+    _save_share(share)
+    return {"id": share["id"], "url": _share_url(share["id"]), "live": share["live"]}
+
+
+@app.put("/api/share/{share_id}")
+async def api_share_update(share_id: str, request: Request):
+    require_session(request)
+    share = _load_share(share_id)
+    body = await request.json()
+    if "messages" in body:
+        share["messages"] = body["messages"] or []
+    if "title" in body:
+        share["title"] = str(body["title"])[:120]
+    if "live" in body:
+        share["live"] = bool(body["live"])
+    share["updated"] = time.time()
+    _save_share(share)
+    return {"ok": True, "live": share["live"]}
+
+
+@app.delete("/api/share/{share_id}")
+async def api_share_delete(share_id: str, request: Request):
+    require_session(request)
+    path = _share_path(share_id)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return {"ok": True}
+
+
+@app.get("/api/share/{share_id}/data")
+async def api_share_data(share_id: str):
+    """PUBLIC: the viewer's poll target. No session — the unguessable id is
+    the credential. Returns only what the viewer renders."""
+    share = _load_share(share_id)
+    return {"title": share["title"], "live": share["live"],
+            "messages": share["messages"], "updated": share["updated"]}
+
+
+@app.get("/share/{share_id}")
+async def share_page(share_id: str):
+    """PUBLIC viewer shell — content is fetched by share.js; an invalid id
+    just renders 'not found' client-side (no id oracle beyond the fetch)."""
+    return FileResponse(os.path.join(STATIC_DIR, "share.html"))
+
+
 # ─── document extraction for chat uploads ──────────────────────────────────
 # vLLM's multimodal API accepts images, not documents — so binary uploads are
 # converted here: PDFs via poppler (text layer; page images for scanned PDFs

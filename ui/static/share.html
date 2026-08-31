@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Shared chat · vllm-ui</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="topbar">
+  <header>
+    <div class="brand">vllm<span class="brand-dim">-ui</span> <span class="brand-tag">SHARED CHAT</span></div>
+    <div id="share-title" class="muted"></div>
+    <div class="spacer"></div>
+    <div id="live-pill" class="pill pill-off" hidden>live</div>
+  </header>
+</div>
+<div class="chat-layout share-layout">
+  <div class="chat-main">
+    <div id="share-status" class="chat-empty">
+      <h2>Loading…</h2>
+      <p class="muted"></p>
+    </div>
+    <div id="chat-messages" class="chat-messages"></div>
+  </div>
+</div>
+<script src="/static/md.js"></script>
+<script src="/static/share.js"></script>
+</body>
+</html>

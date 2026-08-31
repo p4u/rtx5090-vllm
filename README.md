@@ -174,6 +174,13 @@ What it does:
   **regenerate** the last reply, and **edit & resubmit** a user message
   (truncates and regenerates from that point). Each reply is stamped with
   the model that produced it, a timestamp, and measured tokens + tok/s.
+  **Share Chat**: a button creates a public read-only link under an
+  unguessable URL (`/share/<192-bit token>` — possession of the link is the
+  credential; `noindex`, revocable, dies instantly on revoke). With the
+  **Live** option, viewers follow the conversation in real time as replies
+  stream (the owner's browser pushes updates; viewers poll until the share
+  goes static). Debug logs, tool stdout and text-file contents are stripped
+  before anything leaves the browser.
   A **context meter** above the composer shows live utilization of the
   model's effective context window (from the stream's `prompt_tokens`), and
   a **Compact** button replaces the conversation with a model-written

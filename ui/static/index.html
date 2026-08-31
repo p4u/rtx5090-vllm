@@ -152,6 +152,22 @@
           <span id="ctx-label" class="muted">ctx —</span>
           <button id="compact-btn" class="btn ghost small-btn"
             title="Summarize this conversation and continue from the summary (frees context)">Compact</button>
+          <button id="share-btn" class="btn ghost small-btn"
+            title="Create a public read-only link for this chat">Share</button>
+        </div>
+        <div id="share-panel" class="share-panel" hidden>
+          <div class="row">
+            <code id="share-url" class="token"></code>
+            <button id="share-copy" class="btn small-btn">Copy</button>
+          </div>
+          <div class="row share-panel-row">
+            <label class="share-live-label">
+              <input type="checkbox" id="share-live"> Live — viewers follow this chat in real time
+            </label>
+            <div class="spacer"></div>
+            <button id="share-create" class="btn small-btn">Create link</button>
+            <button id="share-revoke" class="btn danger small-btn" hidden>Stop sharing</button>
+          </div>
         </div>
         <div id="attach-list" class="attach-list"></div>
         <div class="composer-row">
@@ -180,6 +196,7 @@
   </div>
 </div>
 
+<script src="/static/md.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

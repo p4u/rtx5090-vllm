@@ -37,25 +37,6 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
-async function copyText(text) {
-  // navigator.clipboard needs a secure context; this UI is often served over
-  // plain HTTP on a LAN/VPN domain, so fall back to the legacy path.
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.cssText = "position:fixed;opacity:0";
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try { ok = document.execCommand("copy"); } catch {}
-    ta.remove();
-    return ok;
-  }
-}
-
 function fmt(n, digits = 1) {
   if (n === null || n === undefined) return "—";
   if (typeof n !== "number") return String(n);
@@ -810,92 +791,8 @@ function stopHistory() {
   historyTimer = null;
 }
 
-// ─── chat: minimal markdown renderer ───────────────────────────────────────
-
-function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-}
-
-function renderMarkdown(src) {
-  // NUL delimits our code-block placeholders below and is never legitimate
-  // chat text — strip it so crafted input can't forge a placeholder.
-  src = src.replace(/\u0000/g, "");
-  // 1. pull fenced code blocks out so nothing inside them is transformed.
-  // Line-based scan: a fence only opens/closes at the start of a line, so
-  // adjacent or nested fences in model output (```markdown containing ```py)
-  // can't bleed code into the prose the way a lazy regex does.
-  const codes = [];
-  const kept = [];
-  let fence = null;   // {lang, lines} while inside a block
-  for (const line of src.split("\n")) {
-    const open = fence === null && line.match(/^\s*```(\S*)\s*$/);
-    if (open) {
-      fence = { lang: open[1], lines: [] };
-    } else if (fence !== null && /^\s*```\s*$/.test(line)) {
-      codes.push({ lang: fence.lang, code: fence.lines.join("\n") });
-      kept.push(`\u0000CODE${codes.length - 1}\u0000`);
-      fence = null;
-    } else if (fence !== null) {
-      fence.lines.push(line);
-    } else {
-      kept.push(line);
-    }
-  }
-  // Unterminated fence (mid-stream, or a stray trailing ``` from the model):
-  // render its content as code, but drop it entirely while still empty so a
-  // lone closing fence never leaves an empty box behind.
-  if (fence !== null && fence.lines.length) {
-    codes.push({ lang: fence.lang, code: fence.lines.join("\n") });
-    kept.push(`\u0000CODE${codes.length - 1}\u0000`);
-  }
-  let html = escapeHtml(kept.join("\n"));
-
-  // tables (| a | b | with a |---| separator row)
-  html = html.replace(
-    /(^\|.+\|\n\|[\s\-:|]+\|\n(?:\|.+\|\n?)*)/gm,
-    (block) => {
-      const rows = block.trim().split("\n").map((r) =>
-        r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim()));
-      const head = rows.shift(); rows.shift(); // header + separator
-      const tr = (cells, tag) =>
-        `<tr>${cells.map((c) => `<${tag}>${c}</${tag}>`).join("")}</tr>`;
-      return `<table>${tr(head, "th")}${rows.map((r) => tr(r, "td")).join("")}</table>`;
-    });
-
-  html = html
-    .replace(/^###+ (.*)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.*)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.*)$/gm, "<h1>$1</h1>")
-    .replace(/^&gt; ?(.*)$/gm, "<blockquote>$1</blockquote>")
-    .replace(/^(?:-{3,}|\*{3,})$/gm, "<hr>")
-    .replace(/^[*\-] (.*)$/gm, "<li>$1</li>")
-    .replace(/^\d+\. (.*)$/gm, "<li data-ol>$1</li>")
-    .replace(/(<li data-ol>[\s\S]*?<\/li>)(?!\n<li data-ol)/g, "<ol>$1</ol>")
-    .replace(/(<li>(?:(?!<li data-ol)[\s\S])*?<\/li>)(?!\n<li>)/g, "<ul>$1</ul>")
-    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-             '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-    .replace(/\n{2,}/g, "</p><p>")
-    .replace(/\n/g, "<br>");
-  html = `<p>${html}</p>`;
-
-  return html.replace(/\u0000CODE(\d+)\u0000/g, (_, i) => {
-    const { lang, code } = codes[+i];
-    return `<pre><button class="btn ghost small-btn copy-code">Copy</button>` +
-           `<code data-lang="${escapeHtml(lang)}">${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`;
-  });
-}
-
-document.addEventListener("click", (e) => {
-  if (e.target.classList && e.target.classList.contains("copy-code")) {
-    copyText(e.target.nextElementSibling.textContent);
-    e.target.textContent = "Copied!";
-    setTimeout(() => { e.target.textContent = "Copy"; }, 1200);
-  }
-});
+// markdown renderer + copyText live in md.js (shared with the public
+// share viewer page)
 
 // ─── chat: conversation store (localStorage) ───────────────────────────────
 
@@ -929,6 +826,9 @@ function newChat() {
 }
 
 function deleteChat(id) {
+  const dead = chats.find((c) => c.id === id);
+  if (dead && dead.share)
+    fetch(`/api/share/${dead.share.id}`, { method: "DELETE" }).catch(() => {});
   chats = chats.filter((c) => c.id !== id);
   if (activeChatId === id) activeChatId = chats.length ? chats[0].id : null;
   saveChats(); renderConvList(); renderMessages();
@@ -1275,6 +1175,7 @@ function renderMessages() {
   });
   restoreFolds(box, openFolds);
   box.scrollTop = box.scrollHeight;
+  renderSharePanel();
 }
 
 // ─── chat: attachments ─────────────────────────────────────────────────────
@@ -1542,6 +1443,7 @@ async function generate(chat) {
         renderMessageInto(el, assistantMsg);
         if (stick) box.scrollTop = box.scrollHeight;
       }
+      if (chat.share && chat.share.live) pushShare(chat);  // self-throttled
     }
   } catch (e) {
     if (e.name !== "AbortError")
@@ -1561,6 +1463,7 @@ async function generate(chat) {
     saveChats();
     renderMessages();   // full re-render attaches meta + action buttons
     renderCtx();
+    pushShare(chat, true);
   }
 }
 
@@ -1626,6 +1529,106 @@ function renderCtx() {
   fill.classList.toggle("hot", pct > 85);
   label.textContent = `ctx ${used.toLocaleString()} / ${fmtCtx(ctxWindow)} · ${pct.toFixed(1)}%`;
 }
+
+// ─── share ─────────────────────────────────────────────────────────────────
+// A share is a server-side copy of the chat under an unguessable URL. The
+// viewer only gets what it renders: debug logs, stdout and text-file
+// contents are stripped here before anything leaves the browser.
+
+let lastSharePush = 0;
+
+function shareSanitize(chat) {
+  return chat.messages.map((m) => ({
+    role: m.role, text: m.text || "", reasoning: m.reasoning || undefined,
+    model: m.model, ts: m.ts, stats: m.stats,
+    files: (m.files || []).map((f) => ({
+      name: f.name, kind: f.kind,
+      dataurl: f.kind === "image" ? f.dataurl : undefined,
+    })),
+    browsing: (m.browsing || []).map((b) =>
+      b.event === "tool_start"
+        ? { event: b.event, tool: b.tool, args: b.args }
+        : b.event === "tool_result"
+          ? { event: b.event, tool: b.tool, ok: b.ok, preview: b.preview,
+              duration: b.duration, images: b.images }
+          : { event: b.event, message: b.message }),
+  }));
+}
+
+async function pushShare(chat, force = false) {
+  if (!chat || !chat.share) return;
+  const now = Date.now();
+  if (!force && now - lastSharePush < 2500) return;
+  lastSharePush = now;
+  try {
+    await fetch(`/api/share/${chat.share.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: chat.title, live: chat.share.live,
+                             messages: shareSanitize(chat) }),
+    });
+  } catch { /* transient — next push retries */ }
+}
+
+function renderSharePanel() {
+  const chat = activeChat();
+  const panel = $("share-panel");
+  if (panel.hidden) return;
+  const share = chat && chat.share;
+  $("share-url").textContent = share ? share.url : "no link yet — create one below";
+  $("share-copy").disabled = !share;
+  $("share-create").hidden = !!share;
+  $("share-revoke").hidden = !share;
+  $("share-live").checked = share ? !!share.live : false;
+}
+
+$("share-btn").addEventListener("click", () => {
+  const panel = $("share-panel");
+  panel.hidden = !panel.hidden;
+  renderSharePanel();
+});
+
+$("share-create").addEventListener("click", async () => {
+  const chat = activeChat();
+  if (!chat) return;
+  try {
+    const r = await api("/api/share", {
+      method: "POST",
+      body: JSON.stringify({ title: chat.title, live: $("share-live").checked,
+                             messages: shareSanitize(chat) }),
+    });
+    chat.share = { id: r.id, url: r.url, live: r.live };
+    saveChats(); renderSharePanel();
+  } catch (e) {
+    alert(`Share failed: ${e.message}`);
+  }
+});
+
+$("share-live").addEventListener("change", async () => {
+  const chat = activeChat();
+  if (!chat || !chat.share) return;
+  chat.share.live = $("share-live").checked;
+  saveChats();
+  await pushShare(chat, true);
+});
+
+$("share-copy").addEventListener("click", async () => {
+  const chat = activeChat();
+  if (chat && chat.share) {
+    await copyText(chat.share.url);
+    $("share-copy").textContent = "Copied!";
+    setTimeout(() => { $("share-copy").textContent = "Copy"; }, 1200);
+  }
+});
+
+$("share-revoke").addEventListener("click", async () => {
+  const chat = activeChat();
+  if (!chat || !chat.share) return;
+  if (!confirm("Stop sharing? The link stops working immediately.")) return;
+  try { await fetch(`/api/share/${chat.share.id}`, { method: "DELETE" }); } catch {}
+  delete chat.share;
+  saveChats(); renderSharePanel();
+});
 
 const COMPACT_PROMPT =
   "Summarize this entire conversation compactly for use as continuation " +

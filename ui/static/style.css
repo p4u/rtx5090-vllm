@@ -602,6 +602,21 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
   font: 12px/1.6 var(--sans); color: var(--ink-mut);
 }
 
+/* share */
+.share-panel {
+  max-width: 780px; margin: 0 auto 10px;
+  border: 1px dashed var(--line); border-radius: 3px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.share-panel .token { font-size: 11.5px; }
+.share-live-label {
+  font: 11.5px/1.5 var(--mono); color: var(--ink-mut);
+  display: flex; align-items: center; gap: 7px; cursor: pointer;
+}
+.share-live-label input { accent-color: var(--amber); }
+.share-layout .chat-main { max-width: 900px; margin: 0 auto; }
+
 /* attachments */
 .attach-list { display: flex; gap: 6px; flex-wrap: wrap; max-width: 780px; margin: 0 auto 6px; }
 .attach-chip {
