@@ -52,8 +52,9 @@ def public_api_base() -> str | None:
         return None
     if UI_DOMAIN.startswith(("http://", "https://")):
         return UI_DOMAIN.rstrip("/") + "/v1"
-    scheme = "https" if UI_TLS_ACTIVE else "http"
-    return f"{scheme}://{UI_DOMAIN}:{UI_PORT}/v1"
+    if UI_TLS_ACTIVE:                        # TLS is 443-only: no port suffix
+        return f"https://{UI_DOMAIN}/v1"
+    return f"http://{UI_DOMAIN}:{UI_PORT}/v1"
 
 app = FastAPI(title="vllm-ui", docs_url=None, redoc_url=None, openapi_url=None)
 launcher = vllm_mgr.Launcher()
@@ -184,50 +185,37 @@ async def _sampler():
 
 
 async def _cert_renewer():
-    """Automatic Let's Encrypt renewal (UI_TLS=letsencrypt). Daily: run
-    acme.sh's cron entry point — it renews via TLS-ALPN-01 on public port 443
-    only when the cert is due (acme.sh keeps per-domain state in
-    ui/data/acme-sh) — reinstall the cert files, fix ownership, and restart
-    this container when the certificate actually changed (the restart policy
-    brings it right back)."""
-    import hashlib
-
+    """Automatic Let's Encrypt renewal (UI_TLS on). The UI itself occupies
+    port 443, which the TLS-ALPN-01 responder needs — so once the cert file
+    is >60 days old (LE certs live 90) this task launches a DETACHED helper
+    container (docker:cli + the host socket) that stops the UI, renews via
+    acme.sh on the freed :443, reinstalls the cert files, fixes ownership,
+    and starts the UI again. ~30s of downtime every ~60 days. The helper is
+    detached because this process dies at its `docker stop` step; a named
+    container guards against double-starts."""
     cert_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "certs")
     acmesh_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "acme-sh")
     live = os.path.join(cert_dir, "live", UI_DOMAIN, "fullchain.pem")
-
-    def _digest() -> str:
-        with open(live, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
-
+    script = (
+        "docker stop vllm-ui; "
+        f"docker run --rm --network host -v {acmesh_dir}:/acme.sh neilpang/acme.sh --cron; "
+        f"docker run --rm -v {acmesh_dir}:/acme.sh -v {cert_dir}:/certs neilpang/acme.sh "
+        f"--install-cert -d {UI_DOMAIN} --ecc "
+        f"--fullchain-file /certs/live/{UI_DOMAIN}/fullchain.pem "
+        f"--key-file /certs/live/{UI_DOMAIN}/privkey.pem; "
+        f"docker run --rm -v {cert_dir}:/c -v {acmesh_dir}:/a alpine "
+        f"chown -R {os.getuid()}:{os.getgid()} /c /a; "
+        "docker start vllm-ui")
     while True:
         try:
-            if os.path.exists(live):
-                # Compare CONTENT, not mtime: --install-cert rewrites the
-                # files unconditionally even when nothing was renewed (a
-                # mtime check made every startup look like a renewal and
-                # restart-looped the UI).
-                before = _digest()
-                # host network: the ALPN responder must bind the host's :443
+            if os.path.exists(live) and \
+               time.time() - os.path.getmtime(live) > 60 * 24 * 3600:
+                print("[tls] certificate is >60 days old — launching the "
+                      "renewal helper (brief downtime)", flush=True)
                 await vllm_mgr._run(
-                    ["docker", "run", "--rm", "--network", "host",
-                     "-v", f"{acmesh_dir}:/acme.sh", "neilpang/acme.sh",
-                     "--cron"], timeout=600)
-                await vllm_mgr._run(
-                    ["docker", "run", "--rm", "-v", f"{acmesh_dir}:/acme.sh",
-                     "-v", f"{cert_dir}:/certs", "neilpang/acme.sh",
-                     "--install-cert", "-d", UI_DOMAIN, "--ecc",
-                     "--fullchain-file", f"/certs/live/{UI_DOMAIN}/fullchain.pem",
-                     "--key-file", f"/certs/live/{UI_DOMAIN}/privkey.pem"],
-                    timeout=120)
-                if _digest() != before:
-                    await vllm_mgr._run(
-                        ["docker", "run", "--rm", "-v", f"{cert_dir}:/c",
-                         "-v", f"{acmesh_dir}:/a", "alpine", "chown", "-R",
-                         f"{os.getuid()}:{os.getgid()}", "/c", "/a"], timeout=60)
-                    print("[tls] certificate renewed — restarting to load it",
-                          flush=True)
-                    await vllm_mgr._run(["docker", "restart", "vllm-ui"], timeout=60)
+                    ["docker", "run", "-d", "--rm", "--name", "vllm-ui-cert-renew",
+                     "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                     "docker:cli", "sh", "-c", script], timeout=60)
         except Exception as e:
             print(f"[tls] renewer error: {e}", flush=True)
         await asyncio.sleep(24 * 3600)
@@ -236,7 +224,7 @@ async def _cert_renewer():
 @app.on_event("startup")
 async def _start_sampler():
     asyncio.create_task(_sampler())
-    if UI_TLS_ACTIVE and os.environ.get("UI_TLS", "").strip() == "letsencrypt":
+    if UI_TLS_ACTIVE:
         asyncio.create_task(_cert_renewer())
 
 

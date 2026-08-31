@@ -13,9 +13,12 @@ COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
 # iproute2: run.sh's BIND_CIDR resolution shells out to `ip`, and the UI
 # enumerates host networks (--network host makes them visible) for the
-# serving-bind presets.
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
-    && rm -rf /var/lib/apt/lists/*
+# serving-bind presets. setcap: with TLS the UI binds the privileged port
+# 443 while running as the host user — a file capability on the python
+# binary allows that without root.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 libcap2-bin \
+    && rm -rf /var/lib/apt/lists/* \
+    && setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(which python3)")"
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt

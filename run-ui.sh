@@ -19,10 +19,10 @@
 #   UI_PASSWORD   REQUIRED — gates the web UI.
 #   UI_HOST       bind address (default 0.0.0.0; host networking, so this is
 #                 the real bind — use a VPN address to restrict like BIND_CIDR).
-#   UI_PORT       port (default 8090).
+#   UI_PORT       port for plain-http mode (default 8090; ignored with TLS).
+#   UI_TLS=1      Let's Encrypt TLS — serves https://UI_DOMAIN/ on 443.
 #
-# SECURITY: no TLS — password and token travel in plaintext. Front it with a
-# VPN (WireGuard) or a TLS reverse proxy before exposing beyond a LAN.
+# Without TLS, password and token travel in plaintext — keep it on a VPN.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
@@ -60,25 +60,27 @@ DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 # ui/data must exist BEFORE the mount so it's created with your uid, not root.
 mkdir -p "$SCRIPT_DIR/ui/data"
 
-# ─── TLS (UI_TLS=letsencrypt + UI_DOMAIN) ───────────────────────────────────
-# Real Let's Encrypt certificate via acme.sh TLS-ALPN-01: during issuance and
-# renewal the CA connects to PUBLIC port 443 of UI_DOMAIN — open it in your
-# firewall. Port 443 is only bound for those brief moments (the UI keeps
-# serving on UI_PORT), so nothing else may occupy it. Renewal is automatic:
-# a daily task inside the UI re-runs acme.sh when the cert is due and
-# restarts the UI. acme.sh state lives in ui/data/acme-sh (gitignored).
-# A best-effort redirector on :80 sends http → https://UI_DOMAIN:UI_PORT
-# (useful when port 80 is open; harmless otherwise).
+# ─── TLS (UI_TLS=1 + UI_DOMAIN) — https on 443, and ONLY on 443 ─────────────
+# Real Let's Encrypt certificate via acme.sh TLS-ALPN-01: the CA connects to
+# PUBLIC port 443 of UI_DOMAIN — open it in your firewall. With TLS active
+# the UI itself serves https on 443 (UI_PORT is ignored; URLs need no port
+# suffix) and plain http hitting 443 gets redirected. Renewal is automatic:
+# a daily task inside the UI launches a detached helper that briefly stops
+# the UI (frees :443 for the ALPN responder), renews, and starts it again —
+# ~30s of downtime every ~60 days. acme.sh state: ui/data/acme-sh
+# (gitignored). A best-effort redirector on :80 also sends http → https.
 TLS_ACTIVE=""
 CERT_DIR="$SCRIPT_DIR/ui/data/certs"
 ACMESH_DIR="$SCRIPT_DIR/ui/data/acme-sh"
-if [[ "${UI_TLS:-}" == "letsencrypt" ]]; then
+if [[ "${UI_TLS:-}" == "1" || "${UI_TLS:-}" == "letsencrypt" ]]; then
   if [[ -z "${UI_DOMAIN:-}" || "${UI_DOMAIN}" == http* ]]; then
-    echo "run-ui.sh: UI_TLS=letsencrypt needs UI_DOMAIN set to a bare hostname — starting without TLS" >&2
+    echo "run-ui.sh: UI_TLS needs UI_DOMAIN set to a bare hostname — starting without TLS" >&2
   else
     LIVE="$CERT_DIR/live/$UI_DOMAIN"
     mkdir -p "$LIVE" "$ACMESH_DIR"
     if [[ ! -f "$LIVE/fullchain.pem" ]]; then
+      # a running UI occupies :443 — free it for the ALPN responder
+      docker rm -f vllm-ui vllm-ui-redirect >/dev/null 2>&1 || true
       echo ">>> requesting Let's Encrypt certificate for $UI_DOMAIN (TLS-ALPN-01 on public port 443)..."
       docker run --rm --network host -v "$ACMESH_DIR:/acme.sh" neilpang/acme.sh \
         --issue --alpn -d "$UI_DOMAIN" --server letsencrypt \
@@ -94,13 +96,17 @@ if [[ "${UI_TLS:-}" == "letsencrypt" ]]; then
       docker run --rm -v "$CERT_DIR:/c" -v "$ACMESH_DIR:/a" alpine \
         chown -R "$(id -u):$(id -g)" /c /a
       TLS_ACTIVE=1
-      echo ">>> TLS active: https://$UI_DOMAIN:${UI_PORT:-8090}/"
+      # the renewal helper needs this image at 3am, not at first failure
+      docker pull -q docker:cli >/dev/null 2>&1 || true
+      [[ -n "${UI_PORT:-}" && "${UI_PORT}" != "443" ]] \
+        && echo ">>> note: UI_PORT=$UI_PORT is ignored — TLS always serves on 443" >&2
+      echo ">>> TLS active: https://$UI_DOMAIN/ (port 443)"
     else
       echo ">>> warning: no certificate obtained (is public port 443 reachable for $UI_DOMAIN?) — starting WITHOUT TLS" >&2
     fi
   fi
 elif [[ -n "${UI_TLS:-}" && "${UI_TLS}" != "0" ]]; then
-  echo "run-ui.sh: unknown UI_TLS mode '${UI_TLS}' (supported: letsencrypt) — starting without TLS" >&2
+  echo "run-ui.sh: unknown UI_TLS value '${UI_TLS}' (use 1) — starting without TLS" >&2
 fi
 
 # http:80 → https redirector (root: port 80 is privileged; fixed inline
@@ -115,7 +121,7 @@ DOMAIN, PORT = os.environ["UI_DOMAIN"], os.environ["UI_PORT"]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(301)
-        self.send_header("Location", f"https://{DOMAIN}:{PORT}{self.path}")
+        self.send_header("Location", f"https://{DOMAIN}{self.path}")
         self.end_headers()
     do_HEAD = do_GET
     def log_message(self, *a): pass
@@ -152,8 +158,13 @@ docker run -d \
 
 display_host="${UI_HOST:-0.0.0.0}"
 [[ "$display_host" == "0.0.0.0" ]] && display_host="localhost"
-[[ -n "$TLS_ACTIVE" ]] && { scheme=https; display_host="$UI_DOMAIN"; } || scheme=http
-echo ">>> vllm-ui started"
-echo ">>> web UI      : ${scheme}://${display_host}:${UI_PORT:-8090}/"
-echo ">>> OpenAI API  : ${scheme}://${display_host}:${UI_PORT:-8090}/v1  (Bearer token — see UI)"
+if [[ -n "$TLS_ACTIVE" ]]; then
+  echo ">>> vllm-ui started"
+  echo ">>> web UI      : https://$UI_DOMAIN/"
+  echo ">>> OpenAI API  : https://$UI_DOMAIN/v1  (Bearer token — see UI)"
+else
+  echo ">>> vllm-ui started"
+  echo ">>> web UI      : http://${display_host}:${UI_PORT:-8090}/"
+  echo ">>> OpenAI API  : http://${display_host}:${UI_PORT:-8090}/v1  (Bearer token — see UI)"
+fi
 echo ">>> logs / stop : ./logs-ui.sh | ./stop-ui.sh"

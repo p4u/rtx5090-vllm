@@ -2,16 +2,19 @@
 
 Without TLS: plain uvicorn on UI_HOST:UI_PORT — nothing else.
 
-With TLS (UI_TLS_ACTIVE set by run-ui.sh): the public port must serve BOTH
-protocols so that http://domain:8090 redirects instead of showing a browser
-TLS error. A TLS ClientHello always starts with record-type byte 0x16, while
-a plain HTTP request starts with an ASCII method — so a small TCP front on
-UI_HOST:UI_PORT peeks the first byte and either
+With TLS (UI_TLS_ACTIVE set by run-ui.sh): TLS is served ONLY on the
+canonical port 443 — UI_PORT is ignored, and https://DOMAIN/ needs no port
+suffix. The public port must serve BOTH protocols so plain http hitting it
+redirects instead of showing a browser TLS error. A TLS ClientHello always
+starts with record-type byte 0x16, while a plain HTTP request starts with an
+ASCII method — a small TCP front on UI_HOST:443 peeks the first byte and
+either
   * splices the connection byte-for-byte to uvicorn (https), which listens
-    with the certificate on loopback UI_PORT+1 (never exposed), or
-  * reads the request line and answers `301 Location: https://DOMAIN:PORT/…`.
+    with the certificate on loopback :8443 (never exposed), or
+  * reads the request line and answers `301 Location: https://DOMAIN/…`.
 The splice is a dumb bidirectional pump, so streaming (SSE chat, log follow)
-passes through untouched.
+passes through untouched. Binding 443 as a non-root user works because the
+image grants the python binary cap_net_bind_service.
 """
 
 import asyncio
@@ -23,10 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import uvicorn
 
 UI_HOST = os.environ.get("UI_HOST", "0.0.0.0").strip() or "0.0.0.0"
-UI_PORT = int(os.environ.get("UI_PORT", "8090").strip() or "8090")
 UI_DOMAIN = os.environ.get("UI_DOMAIN", "").strip()
 TLS_ACTIVE = bool(os.environ.get("UI_TLS_ACTIVE", "").strip())
-INTERNAL_PORT = UI_PORT + 1   # loopback-only TLS listener behind the demux
+# TLS is 443-only by design; UI_PORT applies to plain-http deployments.
+UI_PORT = 443 if TLS_ACTIVE else int(os.environ.get("UI_PORT", "8090").strip() or "8090")
+INTERNAL_PORT = 8443          # loopback-only TLS listener behind the demux
 CERT_BASE = os.path.join("ui", "data", "certs", "live", UI_DOMAIN)
 
 
@@ -68,7 +72,7 @@ async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             path = "/"
         writer.write((
             "HTTP/1.1 301 Moved Permanently\r\n"
-            f"Location: https://{UI_DOMAIN}:{UI_PORT}{path}\r\n"
+            f"Location: https://{UI_DOMAIN}{path}\r\n"
             "Content-Length: 0\r\nConnection: close\r\n\r\n").encode("latin-1"))
         await writer.drain()
         writer.close()

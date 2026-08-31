@@ -190,16 +190,16 @@ Manual `./run.sh` from a shell keeps its own binding behavior (`HOST_IP` /
 whatever address they bound. `pi.models.json` ships pointed at the proxy
 (`:8090/v1`) — paste your token into its `apiKey`.
 
-**TLS.** Set `UI_TLS=letsencrypt` (with `UI_DOMAIN`, optional `TLS_EMAIL`) in
-`.env` and `run-ui.sh` obtains a real Let's Encrypt certificate via acme.sh
-**TLS-ALPN-01** and serves the UI + OpenAI proxy over
-`https://<domain>:8090`, with fully automatic renewal (a daily task inside
-the UI re-runs acme.sh when the cert is due and restarts itself) and an
-http→https redirect on port 80. The only requirement: **public inbound port
-443** must reach the host during issuance/renewal (open `443/tcp` — and
-optionally `80/tcp` for the redirect — in your firewall; 443 stays free
-otherwise, the UI itself listens on `UI_PORT`). Without TLS, password and
-token travel in plaintext — keep the UI behind a VPN (WireGuard).
+**TLS.** Set `UI_TLS=1` (with `UI_DOMAIN`, optional `TLS_EMAIL`) in `.env`
+and `run-ui.sh` obtains a real Let's Encrypt certificate via acme.sh
+**TLS-ALPN-01** and serves the UI + OpenAI proxy at `https://<domain>/` —
+**always on port 443** (`UI_PORT` is ignored; TLS on other ports is not
+supported). Plain http hitting 443 or 80 redirects to https. Renewal is
+fully automatic: a daily task launches a detached helper that briefly stops
+the UI to free :443, renews, and restarts it (~30 s every ~60 days). The
+only requirement: **public inbound port 443** must reach the host (open
+`443/tcp` — and optionally `80/tcp` — in your firewall). Without TLS,
+password and token travel in plaintext — keep the UI behind a VPN.
 
 How it runs: the `vllm-ui` container mounts the docker socket and the repo (at
 its identical host path) and drives `./run.sh` — the hand-tuned launch configs
