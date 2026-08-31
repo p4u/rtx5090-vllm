@@ -574,6 +574,34 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
 .chat-settings summary { font: 600 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; cursor: pointer; }
 .chat-settings .field { max-width: 440px; margin-top: 8px; }
 
+/* context meter + compact */
+.ctx-row {
+  display: flex; align-items: center; gap: 10px;
+  max-width: 780px; margin: 0 auto 8px;
+}
+.ctx-meter {
+  flex: 1; height: 4px; border-radius: 2px;
+  background: var(--bg-deep); border: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+#ctx-fill {
+  height: 100%; width: 0;
+  background: var(--amber);
+  transition: width .4s ease;
+}
+#ctx-fill.hot { background: var(--bad); }
+#ctx-label { font: 600 10.5px/1 var(--mono); letter-spacing: .05em; white-space: nowrap; }
+.compact-marker {
+  max-width: 780px; margin: 0 auto; width: 100%;
+  border: 1px dashed var(--line); border-radius: 3px;
+  padding: 8px 14px; font: 11.5px/1.6 var(--mono); color: var(--ink-mut);
+}
+.compact-marker summary { cursor: pointer; color: var(--ink-faint); }
+.compact-marker pre {
+  white-space: pre-wrap; margin: 6px 0 0;
+  font: 12px/1.6 var(--sans); color: var(--ink-mut);
+}
+
 /* attachments */
 .attach-list { display: flex; gap: 6px; flex-wrap: wrap; max-width: 780px; margin: 0 auto 6px; }
 .attach-chip {

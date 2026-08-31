@@ -174,6 +174,11 @@ What it does:
   **regenerate** the last reply, and **edit & resubmit** a user message
   (truncates and regenerates from that point). Each reply is stamped with
   the model that produced it, a timestamp, and measured tokens + tok/s.
+  A **context meter** above the composer shows live utilization of the
+  model's effective context window (from the stream's `prompt_tokens`), and
+  a **Compact** button replaces the conversation with a model-written
+  summary that stays in context (viewable in a fold, included in exports) —
+  freeing the window while preserving continuity.
 
 **Security model.** The UI is password-gated (`UI_PASSWORD`). The UI also
 serves the OpenAI API at `http://<host>:8090/v1` as a reverse proxy that

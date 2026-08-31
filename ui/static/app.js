@@ -19,6 +19,7 @@ let tokenValue = null;
 let apiBase = location.origin + "/v1";   // overridden by UI_DOMAIN via /api/state
 let browsingAvailable = false;           // obscura image present (from /api/state)
 let pythonAvailable = false;             // vllm-pysandbox image present
+let ctxWindow = null;                    // running model's effective --max-model-len
 
 // ─── tiny fetch helpers ────────────────────────────────────────────────────
 
@@ -125,8 +126,11 @@ async function pollState() {
   }
   browsingAvailable = !!st.browsing_available;
   pythonAvailable = !!st.python_available;
+  ctxWindow = st.container && st.container.effective_flags
+    ? parseInt(st.container.effective_flags["--max-model-len"]) || null : null;
   renderBrowseToggle();
   renderPyToggle();
+  renderCtx();
   runningKey = st.running_key;
   launching = st.launching;
   renderChatHeader();
@@ -1009,6 +1013,9 @@ function chatToMarkdown(c) {
   const lines = [`# ${c.title}`, "",
     `> Exported from vllm-ui on ${new Date().toLocaleString()} · ` +
     `${c.messages.length} messages`, ""];
+  if (c.compact_summary)
+    lines.push(`## Compacted context (${c.compacted_n || "?"} earlier messages)`,
+               "", c.compact_summary, "", "---", "");
   for (const m of c.messages) {
     const when = m.ts ? ` — ${new Date(m.ts).toLocaleString()}` : "";
     if (m.role === "user") {
@@ -1221,8 +1228,20 @@ function renderMessages() {
   const box = $("chat-messages");
   box.textContent = "";
   const chat = activeChat();
-  $("chat-empty").hidden = !!(chat && chat.messages.length);
-  if (!chat) return;
+  $("chat-empty").hidden = !!(chat && (chat.messages.length || chat.compact_summary));
+  if (!chat) { renderCtx(); return; }
+  if (chat.compact_summary) {
+    const marker = document.createElement("details");
+    marker.className = "compact-marker";
+    const sum = document.createElement("summary");
+    sum.textContent = `— conversation compacted (${chat.compacted_n || "?"} earlier ` +
+                      "messages summarized into context) —";
+    const pre = document.createElement("pre");
+    pre.textContent = chat.compact_summary;
+    marker.append(sum, pre);
+    box.appendChild(marker);
+  }
+  renderCtx();
   chat.messages.forEach((m, idx) => {
     const el = msgEl(m.role);
     renderMessageInto(el, m);
@@ -1353,10 +1372,18 @@ function bindSettings() {
 }
 
 function apiMessages(chat) {
-  // Rebuild the OpenAI messages array from stored history.
+  // Rebuild the OpenAI messages array from stored history. A compacted
+  // chat's summary rides in the system message — replays cleanly on every
+  // chat template, invisible in the transcript.
   const s = chatSettings();
   const out = [];
-  if (s.system) out.push({ role: "system", content: s.system });
+  const sysParts = [];
+  if (s.system) sysParts.push(s.system);
+  if (chat.compact_summary)
+    sysParts.push("Summary of the earlier part of this conversation " +
+                  "(compacted to free context — treat as established fact):\n" +
+                  chat.compact_summary);
+  if (sysParts.length) out.push({ role: "system", content: sysParts.join("\n\n") });
   for (const m of chat.messages) {
     if (m.error && !m.text) continue;            // skip failed empty replies
     if (m.role === "assistant") {
@@ -1406,6 +1433,7 @@ async function generate(chat) {
   $("chat-messages").appendChild(el);
   $("chat-empty").hidden = true;
   let usageTokens = 0;      // accumulated across browsing rounds
+  let lastPromptTokens = 0; // final round's prompt size = live context use
   let firstDeltaAt = 0;
 
   generating = true;
@@ -1466,6 +1494,8 @@ async function generate(chat) {
         }
         if (obj.usage && obj.usage.completion_tokens)
           usageTokens += obj.usage.completion_tokens;
+        if (obj.usage && obj.usage.prompt_tokens)
+          lastPromptTokens = obj.usage.prompt_tokens;
         const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
         if (!delta) continue;
         if (!firstDeltaAt) firstDeltaAt = performance.now();
@@ -1501,8 +1531,11 @@ async function generate(chat) {
       assistantMsg.stats = { tokens: usageTokens,
                              tps: +(usageTokens / Math.max(dur, 0.1)).toFixed(1) };
     }
+    if (lastPromptTokens)   // next turn starts from prompt + this reply
+      chat.ctx_used = lastPromptTokens + usageTokens;
     saveChats();
     renderMessages();   // full re-render attaches meta + action buttons
+    renderCtx();
   }
 }
 
@@ -1548,6 +1581,66 @@ $("py-toggle").addEventListener("click", () => {
   s.python = !(s.python !== false);
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   renderPyToggle();
+});
+
+// ─── context meter + compact ───────────────────────────────────────────────
+
+function renderCtx() {
+  const chat = activeChat();
+  const used = chat && chat.ctx_used;
+  const fill = $("ctx-fill");
+  const label = $("ctx-label");
+  $("compact-btn").disabled = generating || !chat || !chat.messages.length || !runningKey;
+  if (!used || !ctxWindow) {
+    fill.style.width = "0%";
+    label.textContent = ctxWindow ? `ctx — / ${fmtCtx(ctxWindow)}` : "ctx —";
+    return;
+  }
+  const pct = Math.min(100, (used / ctxWindow) * 100);
+  fill.style.width = pct.toFixed(1) + "%";
+  fill.classList.toggle("hot", pct > 85);
+  label.textContent = `ctx ${used.toLocaleString()} / ${fmtCtx(ctxWindow)} · ${pct.toFixed(1)}%`;
+}
+
+const COMPACT_PROMPT =
+  "Summarize this entire conversation compactly for use as continuation " +
+  "context. Preserve every fact, decision, number, code snippet, open " +
+  "question and constraint needed to seamlessly continue. Output ONLY the " +
+  "summary, no preamble. /no_think";
+
+$("compact-btn").addEventListener("click", async () => {
+  const chat = activeChat();
+  if (!chat || !chat.messages.length || generating) return;
+  if (!confirm("Compact this conversation? Messages are replaced by a model-" +
+               "written summary that stays in context (a copy remains viewable).")) return;
+  const btn = $("compact-btn");
+  btn.disabled = true;
+  btn.textContent = "Compacting…";
+  try {
+    const r = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "default", stream: false, max_tokens: 4000,
+        browsing: false, python: false, temperature: 0.3,
+        messages: [...apiMessages(chat), { role: "user", content: COMPACT_PROMPT }],
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error?.message || r.statusText);
+    const d = await r.json();
+    const summary = (d.choices[0].message.content || "").trim();
+    if (!summary) throw new Error("model returned an empty summary");
+    chat.compact_summary = summary;   // replaces any previous summary too
+    chat.compacted_n = (chat.compacted_n || 0) + chat.messages.length;
+    chat.messages = [];
+    chat.ctx_used = null;             // repopulated on the next exchange
+    saveChats(); renderMessages(); renderCtx();
+  } catch (e) {
+    alert(`Compaction failed: ${e.message}`);
+  } finally {
+    btn.textContent = "Compact";
+    renderCtx();
+  }
 });
 
 function renderBrowsing(wrap, m) {

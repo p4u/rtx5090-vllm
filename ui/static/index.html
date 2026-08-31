@@ -147,6 +147,12 @@
       </div>
       <div id="chat-messages" class="chat-messages"></div>
       <div class="composer">
+        <div class="ctx-row">
+          <div class="ctx-meter" title="Context window utilization"><div id="ctx-fill"></div></div>
+          <span id="ctx-label" class="muted">ctx —</span>
+          <button id="compact-btn" class="btn ghost small-btn"
+            title="Summarize this conversation and continue from the summary (frees context)">Compact</button>
+        </div>
         <div id="attach-list" class="attach-list"></div>
         <div class="composer-row">
           <button id="attach-btn" class="btn ghost" title="Attach files">+</button>
