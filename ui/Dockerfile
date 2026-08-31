@@ -16,7 +16,9 @@ COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 # serving-bind presets. setcap: with TLS the UI binds the privileged port
 # 443 while running as the host user — a file capability on the python
 # binary allows that without root.
-RUN apt-get update && apt-get install -y --no-install-recommends iproute2 libcap2-bin \
+# poppler-utils: pdftotext/pdftoppm/pdfinfo power the chat's PDF uploads
+# (text extraction, and page rendering for scanned PDFs on vision models).
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 libcap2-bin poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(which python3)")"
 

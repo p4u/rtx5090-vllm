@@ -156,8 +156,11 @@ What it does:
   thinking models, multiple conversations (kept in your browser's
   localStorage), a system-prompt/temperature/max-tokens panel, stoppable
   generation, and file uploads — text files are inlined into the message as
-  fenced code blocks; images are sent as vision input when the running model
-  supports it. Conversation management: **rename** sessions (pencil or
+  fenced code blocks; images go as vision input (gated on the running model
+  actually having vision); **PDFs** are converted server-side (poppler):
+  text-layer extraction for normal PDFs on any model, and page-image
+  rendering for scanned PDFs when a vision model is running; **DOCX** text
+  is extracted too. Other binary formats are rejected with a clear message. Conversation management: **rename** sessions (pencil or
   double-click), **export to Markdown** (per chat, includes reasoning and
   browsing activity), search across chats, per-message **copy**,
   **regenerate** the last reply, and **edit & resubmit** a user message

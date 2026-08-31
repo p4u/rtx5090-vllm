@@ -1234,20 +1234,66 @@ const IMAGE_MAX = 8 * 1024 * 1024; // 8 MB per image
 
 $("attach-btn").addEventListener("click", (e) => { e.preventDefault(); $("file-input").click(); });
 
+function currentModelHasVision() {
+  const m = modelsCache.find((x) => x.key === runningKey);
+  return !!(m && m.vision);
+}
+
+async function extractDocument(file) {
+  // Server-side conversion (poppler / docx-xml): binary documents become
+  // text, or page images for scanned PDFs when the model can see.
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`/api/extract?vision=${currentModelHasVision() ? 1 : 0}`,
+                        { method: "POST", body: fd });
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 $("file-input").addEventListener("change", async () => {
   for (const file of $("file-input").files) {
     if (file.type.startsWith("image/")) {
+      if (!currentModelHasVision()) {
+        alert(`${file.name}: the running model (${runningKey || "none"}) has no vision — ` +
+              "start a vision model (e.g. qwen38-vision) to send images.");
+        continue;
+      }
       if (file.size > IMAGE_MAX) { alert(`${file.name}: image too large (max 8 MB)`); continue; }
       const dataurl = await new Promise((res) => {
         const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
       });
       pendingFiles.push({ name: file.name, kind: "image", dataurl, size: file.size });
-    } else {
+      renderAttachList();
+      continue;
+    }
+    // peek: real text files inline directly, binaries go through /api/extract
+    const head = await file.slice(0, 4096).text();
+    if (!head.includes("\u0000") && !/^%PDF/.test(head)) {
       if (file.size > TEXT_MAX) { alert(`${file.name}: file too large (max 512 KB)`); continue; }
       const content = await file.text();
-      if (content.includes("\u0000")) { alert(`${file.name}: binary files are not supported`); continue; }
       pendingFiles.push({ name: file.name, kind: "text", content, size: file.size });
+      renderAttachList();
+      continue;
     }
+    try {
+      const doc = await extractDocument(file);
+      if (doc.kind === "text") {
+        pendingFiles.push({ name: `${doc.name} (${doc.note})`, kind: "text",
+                            content: doc.content, size: doc.content.length });
+      } else {
+        doc.images.forEach((dataurl, i) => {
+          pendingFiles.push({ name: `${doc.name} p${i + 1}`, kind: "image",
+                              dataurl, size: dataurl.length });
+        });
+      }
+    } catch (e) {
+      alert(`${file.name}: ${e.message}`);
+    }
+    renderAttachList();
   }
   $("file-input").value = "";
   renderAttachList();

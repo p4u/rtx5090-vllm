@@ -430,6 +430,118 @@ async def api_token_renew(request: Request):
     return {"token": state.renew_token()}
 
 
+# ─── document extraction for chat uploads ──────────────────────────────────
+# vLLM's multimodal API accepts images, not documents — so binary uploads are
+# converted here: PDFs via poppler (text layer; page images for scanned PDFs
+# when the running model has vision), DOCX via its zipped XML. Anything else
+# binary is rejected with the supported list.
+
+EXTRACT_MAX_BYTES = 25 * 1024 * 1024
+EXTRACT_MAX_CHARS = 30000
+SCANNED_PAGE_CAP = 2          # matches the tightest lineup image cap
+SCANNED_THRESHOLD = 100       # avg chars/page below this = no real text layer
+
+
+def _docx_text(data: bytes) -> str:
+    import io
+    import re as _re
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        xml = z.read("word/document.xml").decode("utf-8", errors="replace")
+    # paragraph ends become newlines; every other tag is dropped
+    xml = _re.sub(r"</w:p>", "\n", xml)
+    return html_unescape(_re.sub(r"<[^>]+>", "", xml)).strip()
+
+
+def html_unescape(s: str) -> str:
+    import html as _html
+    return _html.unescape(s)
+
+
+@app.post("/api/extract")
+async def api_extract(request: Request):
+    """Convert an uploaded document into something the model can read.
+    Returns {"kind":"text", content} or {"kind":"images", images:[dataurl]}
+    (scanned PDF + vision=1 query param). Session-gated like the chat."""
+    require_session(request)
+    import base64
+    import tempfile
+
+    form = await request.form()
+    up = form.get("file")
+    if up is None:
+        raise HTTPException(422, "no file field")
+    data = await up.read()
+    name = up.filename or "document"
+    if len(data) > EXTRACT_MAX_BYTES:
+        raise HTTPException(413, f"{name}: larger than 25 MB")
+    vision = request.query_params.get("vision") == "1"
+
+    if data[:4] == b"%PDF":
+        with tempfile.TemporaryDirectory() as td:
+            pdf = os.path.join(td, "in.pdf")
+            with open(pdf, "wb") as f:
+                f.write(data)
+            rc, pages_out, _ = await vllm_mgr._run(["pdfinfo", pdf], timeout=20)
+            pages = 0
+            for line in pages_out.splitlines():
+                if line.startswith("Pages:"):
+                    pages = int(line.split()[1])
+            rc, _, err = await vllm_mgr._run(
+                ["pdftotext", "-layout", pdf, os.path.join(td, "out.txt")], timeout=60)
+            text = ""
+            try:
+                with open(os.path.join(td, "out.txt"), errors="replace") as f:
+                    text = f.read().strip()
+            except OSError:
+                pass
+            if rc != 0 and not text:
+                raise HTTPException(422, f"{name}: PDF could not be parsed ({err[-120:]})")
+            # a scanned PDF has (nearly) no text layer — render pages instead,
+            # but only when the running model can actually see them
+            if len(text) < SCANNED_THRESHOLD * max(pages, 1) and vision:
+                rc, _, err = await vllm_mgr._run(
+                    ["pdftoppm", "-png", "-r", "120", "-f", "1",
+                     "-l", str(min(pages or 1, SCANNED_PAGE_CAP)),
+                     pdf, os.path.join(td, "page")], timeout=120)
+                images = []
+                for fn in sorted(os.listdir(td)):
+                    if fn.startswith("page") and fn.endswith(".png"):
+                        with open(os.path.join(td, fn), "rb") as f:
+                            images.append("data:image/png;base64," +
+                                          base64.b64encode(f.read()).decode())
+                if images:
+                    note = (f"scanned PDF — first {len(images)} of {pages} "
+                            f"pages rendered as images" if pages > len(images)
+                            else f"scanned PDF — {len(images)} pages as images")
+                    return {"kind": "images", "name": name, "images": images,
+                            "pages": pages, "note": note}
+            if not text:
+                raise HTTPException(
+                    422, f"{name}: no text layer" +
+                    ("" if vision else " (a vision model could read it as page images)"))
+            truncated = len(text) > EXTRACT_MAX_CHARS
+            return {"kind": "text", "name": name,
+                    "content": text[:EXTRACT_MAX_CHARS], "pages": pages,
+                    "truncated": truncated,
+                    "note": f"PDF text, {pages} pages" + (" (truncated)" if truncated else "")}
+
+    if data[:2] == b"PK":
+        try:
+            text = _docx_text(data)
+        except Exception:
+            raise HTTPException(422, f"{name}: unsupported archive "
+                                     "(only .docx among zip-based formats)")
+        truncated = len(text) > EXTRACT_MAX_CHARS
+        return {"kind": "text", "name": name, "content": text[:EXTRACT_MAX_CHARS],
+                "truncated": truncated,
+                "note": "DOCX text" + (" (truncated)" if truncated else "")}
+
+    raise HTTPException(
+        422, f"{name}: unsupported binary type — supported: images, PDF, DOCX, "
+             "and any plain-text file")
+
+
 # ─── chat (session-gated passthrough for the built-in chat tab) ─────────────
 
 UNTRUSTED_WEB_NOTE = (
