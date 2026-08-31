@@ -41,7 +41,7 @@ Every model in the lineup has been booted and completion-tested on a real
 - **`jq`** and **`curl`** for the test scripts.
 - **`hf` CLI** (`pip install "huggingface_hub[hf_xet]"`) for fast downloads —
   optional, a Docker-based fallback is built in.
-- Disk: ~20 GB per model. The full lineup is ~270 GB.
+- Disk: ~20 GB per model. The full lineup is ~315 GB.
 
 No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
 `vllm/vllm-openai:latest` container.
@@ -157,7 +157,12 @@ What it does:
   localStorage), a system-prompt/temperature/max-tokens panel, stoppable
   generation, and file uploads — text files are inlined into the message as
   fenced code blocks; images are sent as vision input when the running model
-  supports it.
+  supports it. Conversation management: **rename** sessions (pencil or
+  double-click), **export to Markdown** (per chat, includes reasoning and
+  browsing activity), search across chats, per-message **copy**,
+  **regenerate** the last reply, and **edit & resubmit** a user message
+  (truncates and regenerates from that point). Each reply is stamped with
+  the model that produced it, a timestamp, and measured tokens + tok/s.
 
 **Security model.** The UI is password-gated (`UI_PASSWORD`). The UI also
 serves the OpenAI API at `http://<host>:8090/v1` as a reverse proxy that
@@ -182,10 +187,19 @@ curl http://<host>:8090/v1/chat/completions \
 
 Manual `./run.sh` from a shell keeps its own binding behavior (`HOST_IP` /
 `BIND_CIDR`) — the UI detects and manages externally-launched containers too,
-whatever address they bound. There is **no TLS**: password and token travel in
-plaintext, so front the UI with a VPN (WireGuard) or a TLS reverse proxy
-before exposing it beyond a trusted network. `pi.models.json` ships pointed at
-the proxy (`:8090/v1`) — paste your token into its `apiKey`.
+whatever address they bound. `pi.models.json` ships pointed at the proxy
+(`:8090/v1`) — paste your token into its `apiKey`.
+
+**TLS.** Set `UI_TLS=letsencrypt` (with `UI_DOMAIN`, optional `TLS_EMAIL`) in
+`.env` and `run-ui.sh` obtains a real Let's Encrypt certificate via acme.sh
+**TLS-ALPN-01** and serves the UI + OpenAI proxy over
+`https://<domain>:8090`, with fully automatic renewal (a daily task inside
+the UI re-runs acme.sh when the cert is due and restarts itself) and an
+http→https redirect on port 80. The only requirement: **public inbound port
+443** must reach the host during issuance/renewal (open `443/tcp` — and
+optionally `80/tcp` for the redirect — in your firewall; 443 stays free
+otherwise, the UI itself listens on `UI_PORT`). Without TLS, password and
+token travel in plaintext — keep the UI behind a VPN (WireGuard).
 
 How it runs: the `vllm-ui` container mounts the docker socket and the repo (at
 its identical host path) and drives `./run.sh` — the hand-tuned launch configs
@@ -196,12 +210,14 @@ UI's own state (token, overrides) lives in `ui/data/` (gitignored).
 
 ## Model lineup
 
-Twelve models, each filling a specific role. Run `./run.sh --help` for the full
+Fourteen models, each filling a specific role. Run `./run.sh --help` for the full
 per-model rationale, or `./run.sh` for the interactive picker.
 
 | key                | params        | quant      | ctx (5090) | vision | role |
 |--------------------|---------------|------------|------------|--------|------|
-| `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Newest Qwen (3.8), quality-first dynamic quant, mm off (needs vLLM ≥0.28) |
+| `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Qwen3.8 **quality** flavor: dynamic quant, mm off (needs vLLM ≥0.28) |
+| `qwen38-fast`      | 27B dense     | NVFP4+MTP  | 262K       | —      | Qwen3.8 **speed** flavor: MTP spec decode ~44.7 t/s (1.6×), mm off (≥0.28) |
+| `qwen38-vision`    | 27B dense+vis | NVFP4      | 131K       | ✓      | Qwen3.8 **vision** flavor: image input, ctx pays for the encoder (≥0.28) |
 | `qwen36-27b-awq`   | 27B dense     | AWQ INT4   | 262K       | —      | ⭐ Best coding quality/token, ~2× decode vs NVFP4 |
 | `qwen36-27b-nvfp4` | 27B dense     | NVFP4      | 262K       | —      | Same model, Blackwell-native FP4 path |
 | `qwen36-27b-unsloth`| 27B dense    | NVFP4-dyn  | 262K       | —      | unsloth dynamic NVFP4, higher-q/slower, mm off (needs vLLM ≥0.24) |
@@ -224,6 +240,8 @@ replaces it and is verified on 0.25.1.
 ### Picking one at a glance
 
 - **Best overall quality (newest Qwen)** → `qwen38-27b` (Qwen3.8 dense, dynamic NVFP4, ~28.5 t/s decode, prefill 6.3K→2.1K t/s from 38K→259K ctx)
+- **Newest Qwen, faster** → `qwen38-fast` (same model, MTP speculative decode ~44.7 t/s, standard quant)
+- **Newest Qwen with vision** → `qwen38-vision` (image input, 131K)
 - **Best coding quality per token** → `qwen36-27b-awq` (dense, 2× decode)
 - **Fastest capable daily driver + vision** → `qwen36` (3B-active MoE)
 - **Tool-loop with predictable latency** → `qwen3-coder` (no thinking blocks)

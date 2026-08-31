@@ -415,6 +415,38 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
 .conv-item:hover .del { visibility: visible; }
 .conv-item .del:hover { color: var(--bad); background: none; }
 
+#chat-search {
+  background: var(--bg-deep); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 7px 10px; font: 12px var(--mono);
+}
+#chat-search::placeholder { color: var(--ink-faint); }
+.icon-btn { font-size: 12px; }
+.conv-item .danger-icon:hover { color: var(--bad); }
+.rename-input {
+  flex: 1; min-width: 0;
+  background: var(--bg-deep); color: var(--ink);
+  border: 1px solid var(--amber); border-radius: 3px;
+  padding: 4px 6px; font: 12px var(--mono);
+}
+
+/* message meta + actions */
+.msg-meta { color: var(--ink-faint); font-weight: 400; margin-left: 10px; letter-spacing: .04em; }
+.msg.user .who { display: flex; justify-content: flex-end; gap: 0; }
+.msg.assistant .who { display: flex; align-items: baseline; }
+.msg-actions {
+  display: flex; gap: 6px; margin-top: 6px;
+  visibility: hidden;
+}
+.msg:hover .msg-actions { visibility: visible; }
+.msg.user .msg-actions { justify-content: flex-end; }
+.edit-textarea {
+  width: 100%; min-height: 70px; resize: vertical;
+  background: var(--bg-deep); color: var(--ink);
+  border: 1px solid var(--amber); border-radius: 4px;
+  padding: 10px 12px; font: 13.5px/1.5 var(--sans);
+}
+
 .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .chat-empty { text-align: center; margin: 64px auto 0; max-width: 460px; padding: 0 16px; }
 .chat-empty h2 { text-transform: none; letter-spacing: 0; font: 600 17px/1.3 var(--mono); color: var(--ink); }
@@ -486,9 +518,13 @@ main { max-width: 1100px; margin: 0 auto; padding: 4px 24px 72px; }
   margin-bottom: 10px;
   font: 12px/1.7 var(--mono);
 }
-.browse-row { display: flex; gap: 10px; align-items: baseline; }
-.browse-what { color: var(--ink-mut); overflow-wrap: anywhere; }
-.browse-status { color: var(--ink-faint); white-space: nowrap; flex: none; }
+/* flex-wrap + a min-width floor on .browse-what: overflow-wrap:anywhere makes
+ * every char a break point (min-content ≈ 1ch), so without the floor a wide
+ * status crushes the label into a vertical 1-char column. The floor forces the
+ * status onto its own line instead; both cells wrap internally, never overflow. */
+.browse-row { display: flex; gap: 2px 10px; align-items: baseline; flex-wrap: wrap; }
+.browse-what { color: var(--ink-mut); overflow-wrap: anywhere; flex: 1 1 auto; min-width: min(28ch, 100%); }
+.browse-status { color: var(--ink-faint); flex: none; max-width: 100%; overflow-wrap: anywhere; }
 .browse-status.busy { color: var(--busy); animation: led-pulse 1.2s infinite; }
 .browse-status.bad { color: var(--bad); }
 .browse-error { color: var(--busy); }

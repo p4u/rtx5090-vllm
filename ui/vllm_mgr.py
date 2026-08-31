@@ -359,9 +359,25 @@ class Launcher:
             report["phase"] = "downloading" if "download" in tail.lower() else "preparing"
             return report
         st = info.get("State", {})
-        if health_ok:
+        # When SWITCHING or RESTARTING, the previous container stays healthy
+        # for the few seconds until run.sh's `docker rm -f`. A healthy
+        # container only means "ready" once it is the one THIS launch created:
+        # its Created timestamp must postdate the launch (and its model-key
+        # label must match).
+        info_key = (info.get("Config", {}).get("Labels") or {}).get(MODEL_KEY_LABEL)
+        created = info.get("Created") or ""
+        try:
+            created_ts = time.mktime(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) \
+                - time.timezone  # docker timestamps are UTC
+        except (ValueError, TypeError):
+            created_ts = 0
+        is_ours = info_key == cur["key"] and created_ts >= cur["started_at"] - 5
+        if health_ok and is_ours:
             report["phase"] = "ready"
             self.current = None  # launch complete
+            return report
+        if health_ok and not is_ours:
+            report["phase"] = "preparing"   # previous container being replaced
             return report
         # Crash-loop: --restart unless-stopped resurrects a config that can't
         # boot forever. Surface it instead of showing "loading" for eternity.

@@ -35,6 +35,25 @@ async function api(path, opts = {}) {
   return r.json();
 }
 
+async function copyText(text) {
+  // navigator.clipboard needs a secure context; this UI is often served over
+  // plain HTTP on a LAN/VPN domain, so fall back to the legacy path.
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch {}
+    ta.remove();
+    return ok;
+  }
+}
+
 function fmt(n, digits = 1) {
   if (n === null || n === undefined) return "—";
   if (typeof n !== "number") return String(n);
@@ -569,7 +588,7 @@ $("bind-apply").addEventListener("click", async () => {
 });
 
 $("url-copy").addEventListener("click", async () => {
-  await navigator.clipboard.writeText(apiBase);
+  await copyText(apiBase);
   $("url-copy").textContent = "Copied!";
   setTimeout(() => { $("url-copy").textContent = "Copy URL"; }, 1200);
 });
@@ -580,7 +599,7 @@ $("token-show").addEventListener("click", () => {
 });
 
 $("token-copy").addEventListener("click", async () => {
-  await navigator.clipboard.writeText(tokenValue);
+  await copyText(tokenValue);
   $("token-copy").textContent = "Copied!";
   setTimeout(() => { $("token-copy").textContent = "Copy"; }, 1200);
 });
@@ -865,7 +884,7 @@ function renderMarkdown(src) {
 
 document.addEventListener("click", (e) => {
   if (e.target.classList && e.target.classList.contains("copy-code")) {
-    navigator.clipboard.writeText(e.target.nextElementSibling.textContent);
+    copyText(e.target.nextElementSibling.textContent);
     e.target.textContent = "Copied!";
     setTimeout(() => { e.target.textContent = "Copy"; }, 1200);
   }
@@ -908,30 +927,120 @@ function deleteChat(id) {
   saveChats(); renderConvList(); renderMessages();
 }
 
+function chatMatches(c, q) {
+  if (!q) return true;
+  q = q.toLowerCase();
+  return c.title.toLowerCase().includes(q) ||
+         c.messages.some((m) => (m.text || "").toLowerCase().includes(q));
+}
+
 function renderConvList() {
   const list = $("conv-list");
+  const q = $("chat-search").value.trim();
   list.textContent = "";
   for (const c of chats) {
+    if (!chatMatches(c, q)) continue;
     const item = document.createElement("div");
     item.className = "conv-item" + (c.id === activeChatId ? " active" : "");
     const title = document.createElement("span");
     title.className = "title";
     title.textContent = c.title;
-    const del = document.createElement("button");
-    del.className = "del";
-    del.textContent = "✕";
-    del.title = "Delete chat";
-    del.addEventListener("click", (e) => {
+    title.title = "Double-click to rename";
+    title.addEventListener("dblclick", (e) => { e.stopPropagation(); startRename(c, item, title); });
+
+    const rename = iconBtn("✎", "Rename chat", (e) => {
+      e.stopPropagation(); startRename(c, item, title);
+    });
+    const exp = iconBtn("⤓", "Export as Markdown", (e) => {
+      e.stopPropagation(); exportChatMarkdown(c);
+    });
+    const del = iconBtn("✕", "Delete chat", (e) => {
       e.stopPropagation();
       if (confirm(`Delete chat "${c.title}"?`)) deleteChat(c.id);
     });
-    item.append(title, del);
+    del.classList.add("danger-icon");
+    item.append(title, rename, exp, del);
     item.addEventListener("click", () => {
       activeChatId = c.id;
       renderConvList(); renderMessages();
     });
     list.appendChild(item);
   }
+}
+
+function iconBtn(glyph, tip, onClick) {
+  const b = document.createElement("button");
+  b.className = "del icon-btn";
+  b.textContent = glyph;
+  b.title = tip;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function startRename(c, item, titleEl) {
+  const input = document.createElement("input");
+  input.className = "rename-input";
+  input.value = c.title;
+  input.maxLength = 80;
+  item.replaceChild(input, titleEl);
+  input.focus();
+  input.select();
+  const commit = () => {
+    const v = input.value.trim();
+    if (v) { c.title = v; c.renamed = true; saveChats(); }
+    renderConvList();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") renderConvList();
+  });
+  input.addEventListener("blur", commit);
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+
+$("chat-search").addEventListener("input", renderConvList);
+
+// ─── chat: markdown export ─────────────────────────────────────────────────
+
+function chatToMarkdown(c) {
+  const lines = [`# ${c.title}`, "",
+    `> Exported from vllm-ui on ${new Date().toLocaleString()} · ` +
+    `${c.messages.length} messages`, ""];
+  for (const m of c.messages) {
+    const when = m.ts ? ` — ${new Date(m.ts).toLocaleString()}` : "";
+    if (m.role === "user") {
+      lines.push(`## You${when}`, "");
+      for (const f of m.files || [])
+        lines.push(`*Attached: ${f.name}*`, "");
+      lines.push(m.text || "", "");
+    } else {
+      lines.push(`## ${m.model || "Assistant"}${when}`, "");
+      for (const b of m.browsing || []) {
+        if (b.event === "tool_start")
+          lines.push(b.tool === "web_search"
+            ? `*Searched the web: ${b.args.query ?? ""}*`
+            : `*Fetched: ${b.args.url ?? ""}*`);
+      }
+      if ((m.browsing || []).length) lines.push("");
+      if (m.reasoning)
+        lines.push("<details><summary>Reasoning</summary>", "",
+                   m.reasoning.trim(), "", "</details>", "");
+      lines.push(m.text || "", "");
+      if (m.stats && m.stats.tokens)
+        lines.push(`*${m.stats.tokens} tokens · ${m.stats.tps} tok/s*`, "");
+    }
+    lines.push("---", "");
+  }
+  return lines.join("\n");
+}
+
+function exportChatMarkdown(c) {
+  const blob = new Blob([chatToMarkdown(c)], { type: "text/markdown" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = c.title.replace(/[^\w\d àèéíòóúç.-]+/gi, "_").slice(0, 60) + ".md";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
 // ─── chat: message rendering ───────────────────────────────────────────────
@@ -951,16 +1060,105 @@ function renderChatHeader() {
   }
 }
 
+const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 function msgEl(role, streaming = false) {
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
   const who = document.createElement("div");
   who.className = "who";
-  who.textContent = role === "user" ? "You" : (runningKey || "model");
   const bubble = document.createElement("div");
   bubble.className = "bubble" + (streaming ? " streaming" : "");
   wrap.append(who, bubble);
   return wrap;
+}
+
+function renderWho(wrap, m) {
+  const who = wrap.querySelector(".who");
+  who.textContent = "";
+  const name = document.createElement("span");
+  name.textContent = m.role === "user" ? "You" : (m.model || runningKey || "model");
+  who.appendChild(name);
+  if (m.ts) {
+    const t = document.createElement("span");
+    t.className = "msg-meta";
+    t.textContent = fmtTime(m.ts);
+    who.appendChild(t);
+  }
+  if (m.role !== "user" && m.stats && m.stats.tokens) {
+    const s = document.createElement("span");
+    s.className = "msg-meta";
+    s.textContent = `${m.stats.tokens} tok · ${m.stats.tps} tok/s`;
+    who.appendChild(s);
+  }
+}
+
+function msgActions(wrap, m, chat, idx) {
+  const row = document.createElement("div");
+  row.className = "msg-actions";
+  const copy = document.createElement("button");
+  copy.className = "btn ghost small-btn";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    await copyText(m.text || "");
+    copy.textContent = "Copied!";
+    setTimeout(() => { copy.textContent = "Copy"; }, 1200);
+  });
+  row.appendChild(copy);
+  if (m.role === "user" && !generating) {
+    const edit = document.createElement("button");
+    edit.className = "btn ghost small-btn";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => startEditMessage(wrap, m, chat, idx));
+    row.appendChild(edit);
+  }
+  // regenerate: only on the final assistant message
+  if (m.role === "assistant" && idx === chat.messages.length - 1 && !generating) {
+    const regen = document.createElement("button");
+    regen.className = "btn ghost small-btn";
+    regen.textContent = "Regenerate";
+    regen.addEventListener("click", async () => {
+      if (generating) return;
+      chat.messages.pop();
+      renderMessages();
+      await generate(chat);
+    });
+    row.appendChild(regen);
+  }
+  return row;
+}
+
+function startEditMessage(wrap, m, chat, idx) {
+  // AnythingLLM-style edit-and-resubmit: saving truncates everything below
+  // this message and regenerates from here.
+  const bubble = wrap.querySelector(".bubble");
+  bubble.textContent = "";
+  const ta = document.createElement("textarea");
+  ta.className = "edit-textarea";
+  ta.value = m.text;
+  const actions = document.createElement("div");
+  actions.className = "model-actions";
+  const save = document.createElement("button");
+  save.className = "btn small-btn";
+  save.textContent = "Save & resubmit";
+  save.addEventListener("click", async () => {
+    const v = ta.value.trim();
+    if (!v) return;
+    if (idx < chat.messages.length - 1 &&
+        !confirm("Saving resubmits from here — later messages in this chat are discarded.")) return;
+    m.text = v;
+    chat.messages.length = idx + 1;   // truncate below
+    saveChats(); renderMessages();
+    await generate(chat);
+  });
+  const cancel = document.createElement("button");
+  cancel.className = "btn ghost small-btn";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", renderMessages);
+  actions.append(save, cancel);
+  bubble.append(ta, actions);
+  ta.focus();
+  ta.style.height = Math.min(ta.scrollHeight + 4, 300) + "px";
 }
 
 function renderMessageInto(wrap, m) {
@@ -1019,11 +1217,13 @@ function renderMessages() {
   const chat = activeChat();
   $("chat-empty").hidden = !!(chat && chat.messages.length);
   if (!chat) return;
-  for (const m of chat.messages) {
+  chat.messages.forEach((m, idx) => {
     const el = msgEl(m.role);
     renderMessageInto(el, m);
+    renderWho(el, m);
+    el.appendChild(msgActions(el, m, chat, idx));
     box.appendChild(el);
-  }
+  });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -1131,9 +1331,9 @@ async function sendMessage() {
   if (!activeChat()) newChat();
   const chat = activeChat();
 
-  const userMsg = { role: "user", text, files: pendingFiles };
+  const userMsg = { role: "user", text, files: pendingFiles, ts: Date.now() };
   chat.messages.push(userMsg);
-  if (chat.title === "New chat" && text)
+  if (chat.title === "New chat" && !chat.renamed && text)
     chat.title = text.slice(0, 42) + (text.length > 42 ? "…" : "");
   pendingFiles = [];
   input.value = ""; input.style.height = "auto";
@@ -1143,11 +1343,15 @@ async function sendMessage() {
 
 async function generate(chat) {
   const s = chatSettings();
-  const assistantMsg = { role: "assistant", text: "", reasoning: "" };
+  const assistantMsg = { role: "assistant", text: "", reasoning: "",
+                         ts: Date.now(), model: runningKey };
   chat.messages.push(assistantMsg);
   const el = msgEl("assistant", true);
+  renderWho(el, assistantMsg);
   $("chat-messages").appendChild(el);
   $("chat-empty").hidden = true;
+  let usageTokens = 0;      // accumulated across browsing rounds
+  let firstDeltaAt = 0;
 
   generating = true;
   genAbort = new AbortController();
@@ -1169,6 +1373,7 @@ async function generate(chat) {
         // history minus the empty assistant placeholder just appended
         messages: apiMessages({ ...chat, messages: chat.messages.slice(0, -1) }),
         max_tokens: s.max_tokens || 8192,
+        stream_options: { include_usage: true },
         ...(s.temperature !== undefined ? { temperature: s.temperature } : {}),
       }),
     });
@@ -1203,8 +1408,11 @@ async function generate(chat) {
           assistantMsg.error = obj.error.message;
           continue;
         }
+        if (obj.usage && obj.usage.completion_tokens)
+          usageTokens += obj.usage.completion_tokens;
         const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
         if (!delta) continue;
+        if (!firstDeltaAt) firstDeltaAt = performance.now();
         if (delta.content) assistantMsg.text += delta.content;
         // field renamed across vLLM versions — accept both
         const r = delta.reasoning_content ?? delta.reasoning;
@@ -1232,9 +1440,13 @@ async function generate(chat) {
     genAbort = null;
     $("send-btn").hidden = false;
     $("stop-gen-btn").hidden = true;
-    el.querySelector(".bubble").classList.remove("streaming");
-    renderMessageInto(el, assistantMsg);
+    if (usageTokens && firstDeltaAt) {
+      const dur = (performance.now() - firstDeltaAt) / 1000;
+      assistantMsg.stats = { tokens: usageTokens,
+                             tps: +(usageTokens / Math.max(dur, 0.1)).toFixed(1) };
+    }
     saveChats();
+    renderMessages();   // full re-render attaches meta + action buttons
   }
 }
 

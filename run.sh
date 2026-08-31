@@ -40,7 +40,9 @@
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
-#   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ NEWEST: Qwen3.8, quality-first (mm off) [needs vLLM>=0.28]
+#   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ Qwen3.8 QUALITY flavor (mm off) [needs vLLM>=0.28]
+#   qwen38-fast        27B dense      NVFP4+MTP     262K    qwen3_xml     Qwen3.8 SPEED flavor, ~44.7 t/s spec decode (mm off) [>=0.28]
+#   qwen38-vision      27B dense+vis  NVFP4         131K    qwen3_xml     Qwen3.8 VISION flavor, image input [>=0.28]
 #   qwen36-27b-awq     27B dense      AWQ 4-bit     262K    qwen3_xml     ⭐ PREFERRED 27B, 2x decode vs nvfp4
 #   qwen36-27b-nvfp4   27B dense      NVFP4         262K    qwen3_xml     Blackwell-native FP4
 #   qwen36-27b-unsloth 27B dense      NVFP4-dyn     262K    qwen3_xml     unsloth dynamic NVFP4, higher-q (mm off) [needs vLLM>=0.24]
@@ -57,6 +59,8 @@
 #
 # ─── Picking one at a glance ────────────────────────────────────────────────
 #   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
+#   Newest Qwen but faster (some quality)?  → qwen38-fast    (MTP spec decode, ~1.6x)
+#   Newest Qwen with vision?                → qwen38-vision  (image input, 131K)
 #   Best coding quality per token?          → qwen36-27b-awq (dense, 2x decode)
 #   Fastest capable daily driver + vision?  → qwen36         (3B active MoE)
 #   Coder tool-loop, predictable latency?   → qwen3-coder    (no thinking blocks)
@@ -166,7 +170,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen38-27b qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
+  qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -197,7 +201,9 @@ usage() {
 # Interactive picker, shown when run.sh is invoked with no arguments.
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
-  "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8, quality-first dynamic quant, mm off (needs vLLM>=0.28)"
+  "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8 QUALITY flavor, mm off (needs vLLM>=0.28)"
+  "qwen38-fast|27B dense NVFP4+MTP (sakamakismile), 262K — Qwen3.8 SPEED flavor: MTP spec decode, mm off (needs vLLM>=0.28)"
+  "qwen38-vision|27B dense NVFP4 (Inferact), 131K — Qwen3.8 VISION flavor: image input (needs vLLM>=0.28)"
   "qwen36-27b-awq|27B dense AWQ-INT4 (cyankiwi), 262K — ⭐ PREFERRED 27B: best quality/token, 2x faster decode"
   "qwen36-27b-nvfp4|27B dense NVFP4 (sakamakismile), 262K — Blackwell-native FP4, 27B dense"
   "qwen36-27b-unsloth|27B dense NVFP4-dynamic (unsloth), 262K — higher-quality NVFP4, mm off (needs vLLM>=0.24)"
@@ -374,6 +380,74 @@ select_model() {
         --enforce-eager
         --no-enable-prefix-caching
         --limit-mm-per-prompt '{"image":0,"video":0}'
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_xml
+        --reasoning-parser qwen3
+      )
+      EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    qwen38-fast)
+      # sakamakismile/Qwen3.8-27B-MTP-NVFP4 (~20 GB). SPEED flavor of the
+      # Qwen3.8 trio (see qwen38-27b for quality, qwen38-vision for vision).
+      # llm-compressor NVFP4 with the model's native MTP draft head kept in
+      # BF16 (it's in quantization_config.ignore — REQUIRED: if the head gets
+      # treated as NVFP4 the draft silently degrades to 0% acceptance) →
+      # vLLM speculative decoding via method "mtp". Standard W4A4 quant =
+      # some quality loss vs the unsloth dynamic quant; that's the trade.
+      # Same DeltaNet hybrid constraints as the family. Vision disabled.
+      # compressed-tensors → auto-detected. REQUIRES vLLM >= 0.28.
+      # ctx 262K (full native), VERIFIED on 0.28.0: KV pool 277,296 tokens
+      # (1.06x) — the MTP head shares embed/lm_head with the target, so spec
+      # decoding costs almost no VRAM and full ctx survives.
+      # SPEED (measured): ~44.7 t/s decode with num_speculative_tokens 3
+      # (accept ~45%; k=2 gave 41, plain decode on this family is ~28.5) —
+      # 1.57x the quality flavor. Tool calls verified faithful under spec.
+      # MEMORY BOUNDARIES (verified crashes 2026-08-31, then fixed):
+      #   --max-num-batched-tokens MUST stay 4096 — 8192 (copied from
+      #   gpt-oss's spec tuning) OOMed AFTER boot on the first ~8K prefill.
+      #   util MUST stay 0.93 — 0.95 booted fine but OOMed on a ~95K-token
+      #   prefill (MTP activation footprint grows with depth).
+      # At 4096/0.93: KV pool 275,549 tokens (1.05x); prefills VERIFIED OK at
+      # 6K, 95K and 200K prompt tokens with spec decode active, engine stable.
+      SNAPSHOT_REPO="sakamakismile/Qwen3.8-27B-MTP-NVFP4"
+      MODEL_ARGS=(
+        --max-model-len 262144
+        --max-num-batched-tokens 4096
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.93
+        --kv-cache-dtype fp8
+        --enforce-eager
+        --no-enable-prefix-caching
+        --limit-mm-per-prompt '{"image":0,"video":0}'
+        --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+        --enable-auto-tool-choice
+        --tool-call-parser qwen3_xml
+        --reasoning-parser qwen3
+      )
+      EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    qwen38-vision)
+      # Inferact/Qwen3.8-27B-NVFP4 (~25 GB — BF16 vision tower + MTP tensors
+      # make it the heaviest Qwen3.8 quant). VISION flavor: native image +
+      # video understanding left ON. ModelOpt NVFP4 → --quantization modelopt.
+      # Image cap 2 / video off bounds the encoder profiling memory while
+      # keeping two-image prompts usable. REQUIRES vLLM >= 0.28.
+      # ctx 131072 IS THE VERIFIED CEILING (0.28.0): 25 GB weights + encoder
+      # leave 3.64 GiB KV at util 0.95 (est. max 112,896); 0.96 → 123,872;
+      # util 0.97 (the allocator's limit — do not exceed) just fits 131,072
+      # with pool 134,085 tokens (1.02x). VERIFIED: two-color image described
+      # exactly (colors + positions), coherent text, tool parser active.
+      SNAPSHOT_REPO="Inferact/Qwen3.8-27B-NVFP4"
+      MODEL_ARGS=(
+        --quantization modelopt
+        --max-model-len 131072
+        --max-num-batched-tokens 4096
+        --max-num-seqs 1
+        --gpu-memory-utilization 0.97
+        --kv-cache-dtype fp8
+        --enforce-eager
+        --no-enable-prefix-caching
+        --limit-mm-per-prompt '{"image":2,"video":0}'
         --enable-auto-tool-choice
         --tool-call-parser qwen3_xml
         --reasoning-parser qwen3

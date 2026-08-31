@@ -1,7 +1,7 @@
 {
   "providers": {
     "vllm": {
-      "baseUrl": "http://127.0.0.1:8090/v1",
+      "baseUrl": "https://davinci.ac.upc.edu:8090/v1",
       "api": "openai-completions",
       "apiKey": "paste-token-from-ui-api-access-panel",
       "compat": {
@@ -17,6 +17,45 @@
             "text"
           ],
           "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "qwen38-fast",
+          "name": "Qwen3.8 27B NVFP4+MTP sakamakismile (vLLM) — 262K, SPEED flavor ~44.7 t/s, text-only",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
+          "id": "qwen38-vision",
+          "name": "Qwen3.8 27B NVFP4 Inferact (vLLM) — 131K, VISION flavor, image input",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 131072,
           "maxTokens": 32768,
           "cost": {
             "input": 0,

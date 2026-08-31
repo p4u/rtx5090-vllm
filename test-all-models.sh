@@ -26,6 +26,8 @@ PROMPT="Reply with exactly one sentence confirming you are working."
 
 ALL_MODELS=(
   qwen38-27b
+  qwen38-fast
+  qwen38-vision
   qwen36-27b-awq
   qwen36-27b-nvfp4
   qwen36-27b-unsloth

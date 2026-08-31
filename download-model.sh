@@ -20,7 +20,9 @@ mkdir -p "$CACHE_DIR"
 # Every repo referenced by run.sh, keyed by its run.sh model name.
 # Keep this list in sync with the SNAPSHOT_REPO values in run.sh.
 DEFAULT_REPOS=(
-  "unsloth/Qwen3.8-27B-NVFP4"                              # qwen38-27b (newest, quality-first)
+  "unsloth/Qwen3.8-27B-NVFP4"                              # qwen38-27b (quality flavor)
+  "sakamakismile/Qwen3.8-27B-MTP-NVFP4"                    # qwen38-fast (speed flavor)
+  "Inferact/Qwen3.8-27B-NVFP4"                             # qwen38-vision (vision flavor)
   "cyankiwi/Qwen3.6-27B-AWQ-INT4"                          # qwen36-27b-awq  (preferred 27B)
   "sakamakismile/Qwen3.6-27B-NVFP4"                        # qwen36-27b-nvfp4
   "unsloth/Qwen3.6-27B-NVFP4"                              # qwen36-27b-unsloth

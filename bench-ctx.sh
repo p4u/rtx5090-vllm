@@ -25,6 +25,8 @@ MAX_TOKENS=2000  # enough for reasoning models
 # Format: "key|target_ctx|notes" — target_ctx matches run.sh's configured ceiling.
 ALL_MODELS=(
   "qwen38-27b|262144|Qwen3.8 DeltaNet 27B NVFP4-dyn (mm off)"
+  "qwen38-fast|262144|Qwen3.8 27B NVFP4+MTP spec decode (mm off)"
+  "qwen38-vision|131072|Qwen3.8 27B NVFP4 + vision (Inferact)"
   "qwen36-27b-awq|262144|DeltaNet 27B AWQ"
   "qwen36-27b-nvfp4|262144|DeltaNet 27B NVFP4"
   "qwen36-27b-unsloth|262144|DeltaNet 27B NVFP4-dyn (mm off)"

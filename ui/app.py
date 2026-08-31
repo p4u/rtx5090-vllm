@@ -44,6 +44,7 @@ SESSION_MAX_AGE = 7 * 24 * 3600
 # the browser used.
 UI_DOMAIN = os.environ.get("UI_DOMAIN", "").strip()
 UI_PORT = os.environ.get("UI_PORT", "8090").strip() or "8090"
+UI_TLS_ACTIVE = bool(os.environ.get("UI_TLS_ACTIVE", "").strip())
 
 
 def public_api_base() -> str | None:
@@ -51,7 +52,8 @@ def public_api_base() -> str | None:
         return None
     if UI_DOMAIN.startswith(("http://", "https://")):
         return UI_DOMAIN.rstrip("/") + "/v1"
-    return f"http://{UI_DOMAIN}:{UI_PORT}/v1"
+    scheme = "https" if UI_TLS_ACTIVE else "http"
+    return f"{scheme}://{UI_DOMAIN}:{UI_PORT}/v1"
 
 app = FastAPI(title="vllm-ui", docs_url=None, redoc_url=None, openapi_url=None)
 launcher = vllm_mgr.Launcher()
@@ -97,7 +99,8 @@ async def login(request: Request):
         raise HTTPException(401, "wrong password")
     resp = JSONResponse({"ok": True})
     resp.set_cookie(SESSION_COOKIE, _signer.sign(b"ok").decode(),
-                    max_age=SESSION_MAX_AGE, httponly=True, samesite="lax")
+                    max_age=SESSION_MAX_AGE, httponly=True, samesite="lax",
+                    secure=UI_TLS_ACTIVE)
     return resp
 
 
@@ -180,9 +183,50 @@ async def _sampler():
         await asyncio.sleep(SAMPLE_EVERY)
 
 
+async def _cert_renewer():
+    """Automatic Let's Encrypt renewal (UI_TLS=letsencrypt). Daily: run
+    acme.sh's cron entry point — it renews via TLS-ALPN-01 on public port 443
+    only when the cert is due (acme.sh keeps per-domain state in
+    ui/data/acme-sh) — reinstall the cert files, fix ownership, and restart
+    this container when the certificate actually changed (the restart policy
+    brings it right back)."""
+    cert_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "certs")
+    acmesh_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "acme-sh")
+    live = os.path.join(cert_dir, "live", UI_DOMAIN, "fullchain.pem")
+    while True:
+        try:
+            if os.path.exists(live):
+                before = os.path.getmtime(live)
+                # host network: the ALPN responder must bind the host's :443
+                await vllm_mgr._run(
+                    ["docker", "run", "--rm", "--network", "host",
+                     "-v", f"{acmesh_dir}:/acme.sh", "neilpang/acme.sh",
+                     "--cron"], timeout=600)
+                await vllm_mgr._run(
+                    ["docker", "run", "--rm", "-v", f"{acmesh_dir}:/acme.sh",
+                     "-v", f"{cert_dir}:/certs", "neilpang/acme.sh",
+                     "--install-cert", "-d", UI_DOMAIN, "--ecc",
+                     "--fullchain-file", f"/certs/live/{UI_DOMAIN}/fullchain.pem",
+                     "--key-file", f"/certs/live/{UI_DOMAIN}/privkey.pem"],
+                    timeout=120)
+                if os.path.getmtime(live) > before:
+                    await vllm_mgr._run(
+                        ["docker", "run", "--rm", "-v", f"{cert_dir}:/c",
+                         "-v", f"{acmesh_dir}:/a", "alpine", "chown", "-R",
+                         f"{os.getuid()}:{os.getgid()}", "/c", "/a"], timeout=60)
+                    print("[tls] certificate renewed — restarting to load it",
+                          flush=True)
+                    await vllm_mgr._run(["docker", "restart", "vllm-ui"], timeout=60)
+        except Exception as e:
+            print(f"[tls] renewer error: {e}", flush=True)
+        await asyncio.sleep(24 * 3600)
+
+
 @app.on_event("startup")
 async def _start_sampler():
     asyncio.create_task(_sampler())
+    if UI_TLS_ACTIVE and os.environ.get("UI_TLS", "").strip() == "letsencrypt":
+        asyncio.create_task(_cert_renewer())
 
 
 @app.get("/api/history")
