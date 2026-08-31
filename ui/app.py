@@ -190,13 +190,24 @@ async def _cert_renewer():
     ui/data/acme-sh) — reinstall the cert files, fix ownership, and restart
     this container when the certificate actually changed (the restart policy
     brings it right back)."""
+    import hashlib
+
     cert_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "certs")
     acmesh_dir = str(vllm_mgr.REPO_DIR / "ui" / "data" / "acme-sh")
     live = os.path.join(cert_dir, "live", UI_DOMAIN, "fullchain.pem")
+
+    def _digest() -> str:
+        with open(live, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
     while True:
         try:
             if os.path.exists(live):
-                before = os.path.getmtime(live)
+                # Compare CONTENT, not mtime: --install-cert rewrites the
+                # files unconditionally even when nothing was renewed (a
+                # mtime check made every startup look like a renewal and
+                # restart-looped the UI).
+                before = _digest()
                 # host network: the ALPN responder must bind the host's :443
                 await vllm_mgr._run(
                     ["docker", "run", "--rm", "--network", "host",
@@ -209,7 +220,7 @@ async def _cert_renewer():
                      "--fullchain-file", f"/certs/live/{UI_DOMAIN}/fullchain.pem",
                      "--key-file", f"/certs/live/{UI_DOMAIN}/privkey.pem"],
                     timeout=120)
-                if os.path.getmtime(live) > before:
+                if _digest() != before:
                     await vllm_mgr._run(
                         ["docker", "run", "--rm", "-v", f"{cert_dir}:/c",
                          "-v", f"{acmesh_dir}:/a", "alpine", "chown", "-R",

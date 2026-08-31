@@ -26,9 +26,7 @@ ENV HOME=/tmp \
     PYTHONUNBUFFERED=1
 
 # Workdir is set to the repo root by run-ui.sh (-w "$SCRIPT_DIR"); app code is
-# loaded from the mounted ./ui. Shell form so UI_HOST/UI_PORT interpolate.
-# UI_TLS_ACTIVE is set by run-ui.sh only when a certificate actually exists
-# (cert paths are repo-relative — the workdir is the repo root).
-CMD exec python -m uvicorn --app-dir ui app:app \
-      --host "${UI_HOST:-0.0.0.0}" --port "${UI_PORT:-8090}" --no-access-log \
-      ${UI_TLS_ACTIVE:+--ssl-certfile "ui/data/certs/live/${UI_DOMAIN}/fullchain.pem" --ssl-keyfile "ui/data/certs/live/${UI_DOMAIN}/privkey.pem"}
+# loaded from the mounted ./ui. ui/serve.py runs uvicorn — and, when
+# UI_TLS_ACTIVE is set by run-ui.sh, a same-port http→https demultiplexer
+# so http://domain:UI_PORT redirects instead of a TLS handshake error.
+CMD ["python", "ui/serve.py"]
