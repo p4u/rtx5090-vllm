@@ -331,7 +331,10 @@ The container is launched to survive failure, not just to start:
   A long `--health-start-period` (5 min) avoids false alarms during slow model
   loads + autotune warmup.
 - **Hang recovery.** Docker's restart policy only fires when the process *exits* —
-  a deadlocked-but-alive server never does. `watchdog-vllm.sh` closes that gap:
+  a deadlocked-but-alive server never does. `watchdog-vllm.sh` closes that gap
+  — including **livelocks** where `/health` keeps answering while a wedged
+  request burns the GPU at ~zero tokens/s (it snapshots the `/metrics` token
+  counters and restarts when they freeze with requests running):
   it restarts the container once it's been `unhealthy` for a couple of checks.
   Schedule it (one-shot, don't loop):
 

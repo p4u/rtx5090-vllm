@@ -409,6 +409,11 @@ select_model() {
       #   prefill (MTP activation footprint grows with depth).
       # At 4096/0.93: KV pool 275,549 tokens (1.05x); prefills VERIFIED OK at
       # 6K, 95K and 200K prompt tokens with spec decode active, engine stable.
+      # KNOWN ISSUE (observed 2026-09-05, vLLM 0.28.0): a request can LIVELOCK
+      # the engine — /health stays 200 while the GPU burns 99%/460W for hours
+      # at ~0 tokens/s, and with --max-num-seqs 1 everything queues behind it.
+      # Suspected MTP spec-decode edge case. watchdog-vllm.sh detects this
+      # (frozen /metrics token counters with running>0) and restarts.
       SNAPSHOT_REPO="sakamakismile/Qwen3.8-27B-MTP-NVFP4"
       MODEL_ARGS=(
         --max-model-len 262144

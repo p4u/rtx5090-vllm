@@ -11,15 +11,34 @@
 #   crontab:   * * * * * /home/p4u/rtx5090-vllm/watchdog-vllm.sh >> /home/p4u/rtx5090-vllm/logs/watchdog.log 2>&1
 #   systemd:   a vllm-watchdog.service (Type=oneshot) + vllm-watchdog.timer (OnUnitActiveSec=60s)
 #
+# It also detects LIVELOCKED inference (seen in the field 2026-09-05 on
+# qwen38-fast: /health kept answering 200 while one request held the engine
+# for 5+ hours at 99% GPU / 460W producing ~zero tokens — with
+# --max-num-seqs 1 that blocks every other request, and the healthcheck
+# never trips). Detection: requests are running but the prompt+generation
+# token counters in /metrics have advanced less than STALL_MIN_TOKENS since
+# a snapshot older than STALL_AFTER_S. Normal decode moves thousands of
+# tokens per minute; the deepest legitimate prefill moves the prompt counter
+# continuously — a frozen pair with running>0 means a wedged engine.
+#
 # Env:
-#   CONTAINER_NAME   container to watch (default: vllm)
-#   FAILS_BEFORE     consecutive unhealthy checks before restarting (default: 2)
+#   CONTAINER_NAME    container to watch (default: vllm)
+#   FAILS_BEFORE      consecutive unhealthy checks before restarting (default: 2)
+#   METRICS_URL       override the /metrics endpoint (default: derived from
+#                     the container's published port; https handled)
+#   STALL_AFTER_S     seconds of near-zero progress with running>0 before
+#                     restarting (default: 600)
+#   STALL_MIN_TOKENS  progress below this over the window counts as stalled
+#                     (default: 60)
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NAME="${CONTAINER_NAME:-vllm}"
 FAILS_BEFORE="${FAILS_BEFORE:-2}"
+STALL_AFTER_S="${STALL_AFTER_S:-600}"
+STALL_MIN_TOKENS="${STALL_MIN_TOKENS:-60}"
 STATE_FILE="${TMPDIR:-/tmp}/vllm-watchdog.$NAME.fails"
+STALL_FILE="${TMPDIR:-/tmp}/vllm-watchdog.$NAME.stall"
 ts() { date -Is; }
 
 # Container state: running/exited/missing, plus health if present.
@@ -52,8 +71,44 @@ if [[ "$health" == "unhealthy" ]]; then
     rm -f "$STATE_FILE"
   fi
 else
-  # healthy / starting / none → reset the counter, nothing to do
+  # healthy / starting / none → reset the counter
   rm -f "$STATE_FILE" 2>/dev/null || true
-  echo "$(ts) [watchdog] '$NAME' state=$state health=$health — ok"
+
+  # ── livelock check (healthy but not making progress) ──
+  if [[ -z "${METRICS_URL:-}" ]]; then
+    hostport=$(docker inspect "$NAME" --format \
+      '{{with index .HostConfig.PortBindings "8000/tcp"}}{{(index . 0).HostIp}}:{{(index . 0).HostPort}}{{end}}' 2>/dev/null || true)
+    hostport="${hostport/0.0.0.0/127.0.0.1}"
+    METRICS_URL="http://${hostport:-127.0.0.1:8080}/metrics"
+  fi
+  metrics=$(curl -sk --max-time 5 "$METRICS_URL" 2>/dev/null \
+            || curl -sk --max-time 5 "${METRICS_URL/http:/https:}" 2>/dev/null || true)
+  running=$(printf '%s' "$metrics" | awk '/^vllm:num_requests_running/{s+=$2} END{printf "%d", s}')
+  tokens=$(printf '%s' "$metrics" | awk \
+    '/^vllm:prompt_tokens_total|^vllm:generation_tokens_total/{s+=$2} END{printf "%d", s}')
+  if [[ -z "$metrics" || "$running" -eq 0 ]]; then
+    rm -f "$STALL_FILE"
+    echo "$(ts) [watchdog] '$NAME' health=$health running=${running:-?} — ok"
+    exit 0
+  fi
+  now=$(date +%s)
+  if [[ -f "$STALL_FILE" ]]; then
+    read -r snap_time snap_tokens < "$STALL_FILE" || { snap_time=$now; snap_tokens=$tokens; }
+    progress=$(( tokens - snap_tokens ))
+    age=$(( now - snap_time ))
+    if (( progress >= STALL_MIN_TOKENS )); then
+      echo "$now $tokens" > "$STALL_FILE"   # progressing — new snapshot
+      echo "$(ts) [watchdog] '$NAME' ok (running=$running, +$progress tokens in ${age}s)"
+    elif (( age >= STALL_AFTER_S )); then
+      echo "$(ts) [watchdog] '$NAME' LIVELOCKED: running=$running but only +$progress tokens in ${age}s — restarting"
+      docker restart "$NAME" >/dev/null 2>&1 && echo "$(ts) [watchdog] restarted" || echo "$(ts) [watchdog] restart FAILED"
+      rm -f "$STALL_FILE"
+    else
+      echo "$(ts) [watchdog] '$NAME' low progress (+$progress tokens in ${age}s/${STALL_AFTER_S}s) — watching"
+    fi
+  else
+    echo "$now $tokens" > "$STALL_FILE"
+    echo "$(ts) [watchdog] '$NAME' running=$running — snapshot taken"
+  fi
 fi
 exit 0
