@@ -10,7 +10,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help update run list stop logs test-chat test-all bench download \
-        download-all watchdog ui ui-stop ui-logs status validate
+        download-all watchdog ui ui-stop ui-logs status validate build-llamacpp
 
 help: ## Show this help
 	@echo "rtx5090-vllm — available targets:"
@@ -23,6 +23,9 @@ help: ## Show this help
 
 update: ## Pull the latest vllm/vllm-openai image
 	./update-vllm.sh
+
+build-llamacpp: ## Build the llama.cpp fork image (RUNTIME=llamacpp models, e.g. bonsai2)
+	./build-llamacpp.sh
 
 run: ## Boot a model (MODEL=<key>, else interactive picker; ARGS= extra vllm args)
 	./run.sh $(MODEL) $(ARGS)

@@ -20,6 +20,12 @@ mkdir -p "$CACHE_DIR"
 # Every repo referenced by run.sh, keyed by its run.sh model name.
 # Keep this list in sync with the SNAPSHOT_REPO values in run.sh.
 DEFAULT_REPOS=(
+  # bonsai2 runs on the llama.cpp fork, not vLLM, and its repo holds several
+  # mutually exclusive quants (F16 is 53.8 GB) — pull only the two files run.sh
+  # uses. --all therefore skips it; see the bonsai2 block in run.sh.
+  # "prism-ml/Ternary-Bonsai-2-27B-gguf"                   # bonsai2 — see note above:
+  #   ./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*PQ2_0.gguf"
+  #   ./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*mmproj-Q8_0.gguf"
   "unsloth/Qwen3.8-27B-NVFP4"                              # qwen38-27b (quality flavor)
   "sakamakismile/Qwen3.8-27B-MTP-NVFP4"                    # qwen38-fast (speed flavor)
   "Inferact/Qwen3.8-27B-NVFP4"                             # qwen38-vision (vision flavor)

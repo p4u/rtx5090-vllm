@@ -25,7 +25,11 @@
 #   CONTAINER_NAME    container to watch (default: vllm)
 #   FAILS_BEFORE      consecutive unhealthy checks before restarting (default: 2)
 #   METRICS_URL       override the /metrics endpoint (default: derived from
-#                     the container's published port; https handled)
+#                     the container's published port; https handled). Both
+#                     engines are understood: vLLM's vllm:* counters and
+#                     llama-server's llamacpp:* ones. The scrape authenticates
+#                     with the container's own VLLM_API_KEY/LLAMA_API_KEY,
+#                     which llama-server requires for /metrics.
 #   STALL_AFTER_S     seconds of near-zero progress with running>0 before
 #                     restarting (default: 600)
 #   STALL_MIN_TOKENS  progress below this over the window counts as stalled
@@ -81,11 +85,23 @@ else
     hostport="${hostport/0.0.0.0/127.0.0.1}"
     METRICS_URL="http://${hostport:-127.0.0.1:8080}/metrics"
   fi
-  metrics=$(curl -sk --max-time 5 "$METRICS_URL" 2>/dev/null \
-            || curl -sk --max-time 5 "${METRICS_URL/http:/https:}" 2>/dev/null || true)
-  running=$(printf '%s' "$metrics" | awk '/^vllm:num_requests_running/{s+=$2} END{printf "%d", s}')
+  # vLLM leaves /metrics unauthenticated, but llama-server puts it behind the
+  # same --api-key as /v1 — without this header the scrape 401s and every
+  # livelock looks like an idle server (running=0 → "ok"), which is exactly the
+  # blind spot this check exists to close. Read the key from the container's
+  # own Env, like the UI proxy does, so token renewal can't desync it.
+  api_key=$(docker inspect "$NAME" --format \
+    '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | sed -n 's/^\(VLLM_API_KEY\|LLAMA_API_KEY\)=//p' | head -n1)
+  metrics=$(curl -sk --max-time 5 ${api_key:+-H "Authorization: Bearer $api_key"} "$METRICS_URL" 2>/dev/null \
+            || curl -sk --max-time 5 ${api_key:+-H "Authorization: Bearer $api_key"} "${METRICS_URL/http:/https:}" 2>/dev/null || true)
+  # Two metric namespaces, one meaning: vLLM exports vllm:*, llama-server
+  # (RUNTIME=llamacpp models) exports llamacpp:* with different spellings for
+  # the same three counters.
+  running=$(printf '%s' "$metrics" | awk \
+    '/^vllm:num_requests_running|^llamacpp:requests_processing/{s+=$2} END{printf "%d", s}')
   tokens=$(printf '%s' "$metrics" | awk \
-    '/^vllm:prompt_tokens_total|^vllm:generation_tokens_total/{s+=$2} END{printf "%d", s}')
+    '/^vllm:prompt_tokens_total|^vllm:generation_tokens_total|^llamacpp:prompt_tokens_total|^llamacpp:tokens_predicted_total/{s+=$2} END{printf "%d", s}')
   if [[ -z "$metrics" || "$running" -eq 0 ]]; then
     rm -f "$STALL_FILE"
     echo "$(ts) [watchdog] '$NAME' health=$health running=${running:-?} — ok"

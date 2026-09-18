@@ -233,11 +233,15 @@ UI's own state (token, overrides) lives in `ui/data/` (gitignored).
 
 ## Model lineup
 
-Fourteen models, each filling a specific role. Run `./run.sh --help` for the full
+Fifteen models, each filling a specific role. Run `./run.sh --help` for the full
 per-model rationale, or `./run.sh` for the interactive picker.
+
+All but one run on the vLLM image. `bonsai2` is the exception — it needs a second
+runtime (see [Two runtimes](#two-runtimes) below).
 
 | key                | params        | quant      | ctx (5090) | vision | role |
 |--------------------|---------------|------------|------------|--------|------|
+| `bonsai2`          | 27B dense+vis | ternary PQ2_0 | 262K    | ✓      | ⭐ **Fastest**: ~141 t/s decode, 6.8 GB weights — runs on the llama.cpp fork, **not vLLM** |
 | `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Qwen3.8 **quality** flavor: dynamic quant, mm off (needs vLLM ≥0.28) |
 | `qwen38-fast`      | 27B dense     | NVFP4+MTP  | 262K       | —      | Qwen3.8 **speed** flavor: MTP spec decode ~44.7 t/s (1.6×), mm off (≥0.28) |
 | `qwen38-vision`    | 27B dense+vis | NVFP4      | 131K       | ✓      | Qwen3.8 **vision** flavor: image input, ctx pays for the encoder (≥0.28) |
@@ -260,8 +264,61 @@ require vLLM ≥ 0.24. The old LilaRest text-only Gemma 4 was **removed** — it
 quantized `lm_head` breaks on vLLM ≥ 0.24; `gemma4-vision` (unquantized head)
 replaces it and is verified on 0.25.1.
 
+### Two runtimes
+
+Every model above runs on `vllm/vllm-openai:latest` except `bonsai2`, which
+**cannot** run on vLLM at any version — and that is a property of the weights,
+not a missing feature:
+
+- 402 of its 851 tensors use **ggml type id 142**, which exists only in
+  prism-ml's llama.cpp fork (upstream ggml defines ids 0–41).
+- The checkpoint carries `prism.hadamard.*` metadata for a Walsh-Hadamard
+  transform applied to activations at runtime, plus an inverse transform on the
+  embedding lookup. It is a modified forward pass, not just a quantization.
+- A loader that ignores that metadata returns **fluent-looking garbage rather
+  than an error**, so "just try it on the stock engine" is never safe here.
+
+So `run.sh` carries a `RUNTIME` field per model. `RUNTIME=llamacpp` launches the
+fork's `llama-server` instead of vLLM, and everything around it is unchanged: same
+container name and port, same `vllm.model-key` label, the same alias list (via
+`--alias`), the same bearer token (via `LLAMA_API_KEY`), and `/health` +
+`/metrics` for the healthcheck and watchdog. Build the image once:
+
+```bash
+./build-llamacpp.sh          # or: make build-llamacpp
+```
+
+It detects your GPU's compute capability, clones the fork's `prism` branch and
+compiles CUDA kernels for that one architecture (~20 min). `run.sh` also builds
+it automatically the first time you launch a `RUNTIME=llamacpp` model. The
+weights are two files, not the whole repo (`F16` there is 53.8 GB):
+
+```bash
+./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*PQ2_0.gguf"
+./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*mmproj-Q8_0.gguf"
+```
+
+**The trade, measured on the 5090** (batch 1, streaming, TTFT excluded). Decode
+is far faster but decays with depth, where the vLLM dense entries stay flat;
+prefill is roughly half of vLLM's, so very deep prompts cost real wall-clock (a
+250K prefill is ~3.5 min):
+
+| context | bonsai2 decode | bonsai2 prefill | `qwen38-27b` decode |
+|---------|----------------|-----------------|---------------------|
+| short   | **142 t/s**    | —               | 28.5 t/s |
+| 8K      | 134 t/s        | 3,765 t/s       | 28.5 t/s |
+| 40K     | 115 t/s        | 3,287 t/s       | 28.5 t/s |
+| 131K    | 81 t/s         | 1,896 t/s       | 28.5 t/s |
+| 250K    | 58.8 t/s       | 1,202 t/s       | 28.5 t/s (~2,100 prefill) |
+
+At `-c 262144` with the vision projector resident it uses **25.4 GB of 32.6 GB**,
+and a needle test recalled two codes planted at 25%/75% depth of a 249,736-token
+prompt. Tool calling (`--jinja`), vision, and the Qwen thinking toggle
+(`chat_template_kwargs.enable_thinking`) are all verified working.
+
 ### Picking one at a glance
 
+- **Fastest decode, with vision** → `bonsai2` (~141 t/s ternary 27B on llama.cpp; prefill is the trade)
 - **Best overall quality (newest Qwen)** → `qwen38-27b` (Qwen3.8 dense, dynamic NVFP4, ~28.5 t/s decode, prefill 6.3K→2.1K t/s from 38K→259K ctx)
 - **Newest Qwen, faster** → `qwen38-fast` (same model, MTP speculative decode ~44.7 t/s, standard quant)
 - **Newest Qwen with vision** → `qwen38-vision` (image input, 131K)

@@ -16,5 +16,8 @@ ui/data/
 .DS_Store
 *.swp
 
+# llama.cpp fork checkout, cloned by build-llamacpp.sh — a build input, not source
+.build/
+
 # Python bytecode (UI app runs from the mounted repo)
 __pycache__/

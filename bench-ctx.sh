@@ -24,6 +24,7 @@ MAX_TOKENS=2000  # enough for reasoning models
 
 # Format: "key|target_ctx|notes" — target_ctx matches run.sh's configured ceiling.
 ALL_MODELS=(
+  "bonsai2|262144|Bonsai 2 ternary 27B PQ2_0 + vision [llama.cpp fork]"
   "qwen38-27b|262144|Qwen3.8 DeltaNet 27B NVFP4-dyn (mm off)"
   "qwen38-fast|262144|Qwen3.8 27B NVFP4+MTP spec decode (mm off)"
   "qwen38-vision|131072|Qwen3.8 27B NVFP4 + vision (Inferact)"
@@ -92,7 +93,8 @@ stop_server() {
 }
 
 get_kv_info() {
-  docker logs vllm 2>&1 | grep -E "KV cache size|Available KV cache|GPU KV cache" | tail -3 | sed 's/^.*INFO[^]]*\] //'
+  # vLLM wording first, then llama-server's (RUNTIME=llamacpp models).
+  docker logs vllm 2>&1 | grep -E "KV cache size|Available KV cache|GPU KV cache|KV self size|n_ctx_slot" | tail -3 | sed 's/^.*INFO[^]]*\] //'
 }
 
 # ── Main loop ─────────────────────────────────────────────────────────────────

@@ -178,7 +178,10 @@ async def _sampler():
                               temp_c=g["temperature_c"], power_w=g["power_w"])
             if base:
                 try:
-                    r = await client.get(base + "/metrics", timeout=4)
+                    # llama-server gates /metrics behind the API key (vLLM
+                    # leaves it open) — without the header the charts go blank.
+                    r = await client.get(base + "/metrics", timeout=4,
+                                         headers=_upstream_auth(info))
                     if r.status_code == 200:
                         m = vllm_mgr.summarize_metrics(r.text)
                         sample.update(
@@ -278,13 +281,28 @@ async def api_state(request: Request):
             "started_at": st.get("StartedAt"),
             # Effective flags actually in force (last-wins fold of the real
             # container command — includes any overrides).
-            "effective_flags": {
-                k: v for k, v in vllm_mgr.fold_flags(
-                    (info.get("Config", {}).get("Cmd") or [])[1:]).items()
-                if k != "--served-model-name"  # 30+ aliases, noise
-            },
+            "effective_flags": _effective_flags(info, run_models),
         }
     return result
+
+
+def _effective_flags(info: dict, run_models: dict) -> dict:
+    """Fold the running container's real command into {flag: value}.
+
+    Runtime-aware: vLLM takes the model path as argv[0] (skip it) while
+    llama-server passes `-m <path>` and uses single-dash flags throughout. The
+    llama.cpp `-c` is surfaced as `--max-model-len` too, so the chat context
+    meter reads one key regardless of which engine is serving.
+    """
+    cmd = info.get("Config", {}).get("Cmd") or []
+    key = vllm_mgr.container_model_key(info, run_models)
+    runtime = (run_models.get(key) or {}).get("runtime", "vllm")
+    is_llamacpp = runtime == "llamacpp" or cmd[:1] == ["-m"]
+    flags = vllm_mgr.fold_flags(cmd if is_llamacpp else cmd[1:], short=is_llamacpp)
+    if is_llamacpp and "-c" in flags and "--max-model-len" not in flags:
+        flags["--max-model-len"] = flags["-c"]
+    # Alias lists are 30+ entries of noise in both spellings.
+    return {k: v for k, v in flags.items() if k not in ("--served-model-name", "--alias")}
 
 
 @app.get("/api/models")
@@ -298,12 +316,19 @@ async def api_models(request: Request):
     models = []
     for key in keys:
         rm = run_models.get(key, {})
-        defaults = {**common, **vllm_mgr.fold_flags(rm.get("model_args", []))}
+        is_llamacpp = rm.get("runtime") == "llamacpp"
+        # COMMON_ARGS are vLLM flags — run.sh does not pass them to llama-server,
+        # so folding them in here would advertise settings that aren't in force.
+        base = {} if is_llamacpp else common
+        defaults = {**base, **vllm_mgr.fold_flags(rm.get("model_args", []), short=is_llamacpp)}
+        if is_llamacpp and "-c" in defaults:
+            defaults.setdefault("--max-model-len", defaults["-c"])
         pm = meta.get(key, {})
         models.append({
             "key": key,
             "name": pm.get("name", key),
             "repo": rm.get("repo"),
+            "runtime": rm.get("runtime", "vllm"),
             "context_window": pm.get("contextWindow"),
             "reasoning": pm.get("reasoning", False),
             "vision": "image" in pm.get("input", []),
@@ -416,11 +441,12 @@ async def api_logs_stream(request: Request):
 @app.get("/api/metrics")
 async def api_metrics(request: Request):
     require_session(request)
-    base, _ = await _upstream()
+    base, info = await _upstream()
     if not base:
         return {"available": False}
     try:
-        r = await client.get(base + "/metrics", timeout=5)
+        r = await client.get(base + "/metrics", timeout=5,
+                             headers=_upstream_auth(info))
         r.raise_for_status()
     except httpx.HTTPError:
         return {"available": False}

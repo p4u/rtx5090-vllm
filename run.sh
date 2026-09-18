@@ -38,8 +38,13 @@
 # it. Other entries were first verified on 0.22.1 — re-check a model if its
 # numbers look off after an image pull.
 #
+# Most entries run on that vLLM image. bonsai2 is the exception: RUNTIME=llamacpp
+# launches it on a locally-built prism-ml llama.cpp fork (./build-llamacpp.sh),
+# the only engine that can execute its ternary tensors — see its case block.
+#
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
+#   bonsai2            27B dense+vis  ternary PQ2_0 262K    jinja         ⭐ FASTEST: ~141 t/s, 6.8 GB weights [llama.cpp fork, NOT vLLM]
 #   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ Qwen3.8 QUALITY flavor (mm off) [needs vLLM>=0.28]
 #   qwen38-fast        27B dense      NVFP4+MTP     262K    qwen3_xml     Qwen3.8 SPEED flavor, ~44.7 t/s spec decode (mm off) [>=0.28]
 #   qwen38-vision      27B dense+vis  NVFP4         131K    qwen3_xml     Qwen3.8 VISION flavor, image input [>=0.28]
@@ -58,6 +63,7 @@
 #   ctx = verified boot+completion ceiling on a single 32 GB 5090.
 #
 # ─── Picking one at a glance ────────────────────────────────────────────────
+#   Fastest decode, and vision too?         → bonsai2        (~141 t/s ternary 27B, llama.cpp)
 #   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
 #   Newest Qwen but faster (some quality)?  → qwen38-fast    (MTP spec decode, ~1.6x)
 #   Newest Qwen with vision?                → qwen38-vision  (image input, 131K)
@@ -118,6 +124,15 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
 fi
 
 IMAGE="vllm/vllm-openai:latest"
+# Second runtime (RUNTIME=llamacpp models only; everything else uses IMAGE).
+# Bonsai's ternary weights are unloadable by vLLM AND by stock llama.cpp: 402 of
+# its 851 tensors use ggml type id 142, which exists only in prism-ml's fork,
+# and the checkpoint carries prism.hadamard.* metadata for a Walsh-Hadamard
+# activation transform applied at runtime. A loader that ignores that metadata
+# returns fluent-looking garbage instead of an error, so there is no safe "just
+# try it on the stock engine" path. No image is published — ./build-llamacpp.sh
+# builds it, and run.sh auto-builds on a miss, like download-model.sh for weights.
+LLAMACPP_IMAGE="${LLAMACPP_IMAGE:-bonsai-llamacpp:prism}"
 CONTAINER_NAME="vllm"
 HOST_PORT="${HOST_PORT:-8080}"
 CONTAINER_PORT=8000
@@ -170,7 +185,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
+  bonsai2 qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -201,6 +216,7 @@ usage() {
 # Interactive picker, shown when run.sh is invoked with no arguments.
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
+  "bonsai2|27B dense ternary PQ2_0 (prism-ml), 262K, vision — ⭐ FASTEST 27B: ~141 t/s, 6.8 GB weights [llama.cpp fork, not vLLM]"
   "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8 QUALITY flavor, mm off (needs vLLM>=0.28)"
   "qwen38-fast|27B dense NVFP4+MTP (sakamakismile), 262K — Qwen3.8 SPEED flavor: MTP spec decode, mm off (needs vLLM>=0.28)"
   "qwen38-vision|27B dense NVFP4 (Inferact), 131K — Qwen3.8 VISION flavor: image input (needs vLLM>=0.28)"
@@ -344,6 +360,56 @@ select_model() {
         --reasoning-parser qwen3
       )
       EXTRA_ENV+=(-e "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True")
+      ;;
+    bonsai2)
+      # prism-ml/Ternary-Bonsai-2-27B-gguf, PQ2_0 (6.8 GB) + mmproj Q8_0
+      # (601 MB). RUNTIME=llamacpp — this is the ONE model here that vLLM
+      # cannot serve, at any version. Qwen3.8-27B retrained so its language
+      # weights carry a ternary (-1/0/+1) representation packed at 2.13
+      # bits/weight into ggml type 142, a type private to prism-ml's fork;
+      # inference also applies a Walsh-Hadamard transform to activations
+      # (prism.hadamard.* in the GGUF header) and an inverse transform on the
+      # embedding lookup. Stock llama.cpp REFUSES PQ2_0/PTQ1_0 outright but
+      # loads a legacy Q2_0 silently and emits gibberish — never "just try it".
+      #
+      # Same Gated DeltaNet hybrid backbone as qwen38-27b (64 layers, full
+      # attention every 4th, ~75% linear) so KV stays cheap at depth. At 3x
+      # smaller weights than the NVFP4 27Bs, the whole 262K context fits with
+      # room to spare: VERIFIED 25,408 MiB of 32,607 at -c 262144 WITH the
+      # vision projector resident (7.2 GB headroom). No --gpu-memory-utilization
+      # knob exists here: llama.cpp allocates the KV cache from -c, it does not
+      # carve a fraction of the card.
+      #
+      # ctx 262K (full native), VERIFIED: needle test recalled two codes planted
+      # at 25%/75% depth in a 249,736-token prompt (also at 131,013).
+      # SPEED (measured, batch 1, streaming): decode 142.1 t/s on short prompts
+      # — 5x qwen38-27b (28.5) and 3.2x qwen38-fast (44.7). Decode DOES decay
+      # with depth, unlike the vLLM dense entries which stay flat: 134 t/s @8K,
+      # 115 @40K, 81 @131K, 58.8 @250K (still 2x qwen38-27b at full context).
+      # Prefill is the trade — roughly half of vLLM's: 3,765 t/s @8K, 3,287
+      # @40K, 1,896 @131K, 1,202 @250K (vLLM does ~2,100 at 259K). Deep prompts
+      # cost real wall-clock: a 250K prefill is ~3.5 min. Short-to-mid context
+      # chat is where this model wins outright.
+      #
+      # --jinja is REQUIRED for OpenAI tool calling (verified: emits proper
+      # tool_calls). Thinking is always on (reasoning_content streams); cap it
+      # per request with --reasoning-budget N. Vision verified through the
+      # projector. The loader suggests --image-min-tokens 1024 for Qwen-VL
+      # grounding accuracy; left unset here (untested, costs prefill).
+      # Sampling defaults are the publisher's for Bonsai 2 (temp 1.0).
+      RUNTIME="llamacpp"
+      SNAPSHOT_REPO="prism-ml/Ternary-Bonsai-2-27B-gguf"
+      GGUF_FILE="Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      MMPROJ_FILE="Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf"
+      MODEL_ARGS=(
+        -c 262144
+        -ngl 99
+        -fa on
+        --jinja
+        --temp 1.0
+        --top-p 0.95
+        --top-k 20
+      )
       ;;
     qwen38-27b)
       # unsloth/Qwen3.8-27B-NVFP4 (~22 GB). Unsloth Dynamic v3.0 NVFP4 of
@@ -686,6 +752,35 @@ resolve_snapshot() {
   printf '%s' "$cache_root/$snap"
 }
 
+# llama-server speaks a different flag language than vLLM. The web UI's
+# override panel (and muscle memory) emit vLLM spellings, so translate the ones
+# with a real equivalent and drop the ones that have none, loudly. Anything
+# unrecognised passes straight through, so native llama-server flags still work.
+translate_vllm_args() {
+  local -a out=()
+  while (( $# )); do
+    case "$1" in
+      --max-model-len)            out+=(-c "$2"); shift 2 ;;
+      --max-num-seqs)             out+=(-np "$2"); shift 2 ;;
+      --max-num-batched-tokens)   out+=(-b "$2"); shift 2 ;;
+      --kv-cache-dtype)
+        case "$2" in
+          fp8|fp8_e4m3|fp8_e5m2)  out+=(--cache-type-k q8_0 --cache-type-v q8_0) ;;
+          auto)                   ;;
+          *) echo "run.sh: --kv-cache-dtype=$2 has no llama.cpp equivalent — ignored" >&2 ;;
+        esac
+        shift 2 ;;
+      --gpu-memory-utilization)
+        echo "run.sh: --gpu-memory-utilization is vLLM-only (llama.cpp sizes KV from -c) — ignored" >&2
+        shift 2 ;;
+      *) out+=("$1"); shift ;;
+    esac
+  done
+  # Guard the empty case: printf on an empty array still emits one blank line,
+  # which llama-server rejects with `invalid argument:`.
+  if (( ${#out[@]} )); then printf '%s\n' "${out[@]}"; fi
+}
+
 # ─── Dispatch ────────────────────────────────────────────────────────────
 case "${1:-}" in
   -h|--help) usage ;;
@@ -704,6 +799,9 @@ EXTRA_VOLS=()
 MODEL_ARGS=()
 SNAPSHOT_REPO=""
 SPECULATOR_REPO=""   # optional EAGLE3/draft repo; downloaded to cache and resolved by id
+RUNTIME="vllm"       # "llamacpp" for models vLLM cannot load (see LLAMACPP_IMAGE)
+GGUF_FILE=""         # llamacpp: weights file inside the snapshot dir
+MMPROJ_FILE=""       # llamacpp: optional vision projector next to it
 select_model "$target"
 
 # Always launch detached. Tolerate a leading `-d` for backward compat.
@@ -720,6 +818,20 @@ SNAPSHOT_CONTAINER="/root/.cache/huggingface/$SNAPSHOT_REL"
 # Speculative-decoding draft head (if the model sets one): ensure it's in the
 # mounted cache so vLLM resolves it by repo id offline, like the main weights.
 [[ -n "$SPECULATOR_REPO" ]] && resolve_snapshot "$SPECULATOR_REPO" >/dev/null
+
+# llamacpp runtime: the fork image has no registry to pull from, so build it
+# locally on a miss (same contract as resolve_snapshot for weights).
+if [[ "$RUNTIME" == "llamacpp" ]]; then
+  if ! docker image inspect "$LLAMACPP_IMAGE" >/dev/null 2>&1; then
+    echo ">>> $LLAMACPP_IMAGE missing — building it (one-off, ~20 min)" >&2
+    "$SCRIPT_DIR/build-llamacpp.sh" || {
+      echo "run.sh: failed to build $LLAMACPP_IMAGE" >&2; exit 1; }
+  fi
+  [[ -f "$SNAPSHOT_HOST/$GGUF_FILE" ]] || {
+    echo "run.sh: $GGUF_FILE not in $SNAPSHOT_HOST" >&2
+    echo "  fetch it with: ./download-model.sh $SNAPSHOT_REPO '*$GGUF_FILE'" >&2
+    exit 1; }
+fi
 
 # Stop any previous container first; only one binds the port.
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -754,7 +866,15 @@ RUN_ARGS=(
 # API token so the model port is never open tokenless, wherever it binds; set
 # VLLM_API_KEY in .env to gate manual launches too. /health and /metrics stay
 # unauthenticated (healthcheck + monitoring depend on that).
-[[ -n "${VLLM_API_KEY:-}" ]] && RUN_ARGS+=(-e "VLLM_API_KEY=$VLLM_API_KEY")
+# llama-server reads the same secret from LLAMA_API_KEY (its --api-key flag,
+# as env so it stays out of `ps`); /health and /metrics stay open there too.
+if [[ -n "${VLLM_API_KEY:-}" ]]; then
+  if [[ "$RUNTIME" == "llamacpp" ]]; then
+    RUN_ARGS+=(-e "LLAMA_API_KEY=$VLLM_API_KEY")
+  else
+    RUN_ARGS+=(-e "VLLM_API_KEY=$VLLM_API_KEY")
+  fi
+fi
 
 # Always detached. Restart policy = resilience (survive crash + reboot); see
 # RESTART_POLICY above. Set RESTART_POLICY=no to debug a config that won't boot.
@@ -764,19 +884,42 @@ display_ip="$HOST_IP"
 [[ "$display_ip" == "0.0.0.0" ]] && display_ip="localhost"
 
 echo ">>> model       : $target"
+echo ">>> runtime     : $RUNTIME"
 echo ">>> snapshot    : $SNAPSHOT_HOST"
 echo ">>> endpoint    : http://${display_ip}:${HOST_PORT}/v1"
 echo ">>> served name : default (+ aliases)"
-echo ">>> cli args    : ${MODEL_ARGS[*]} ${COMMON_ARGS[*]} $*"
 
-# Order matters: COMMON_ARGS first (shared defaults), MODEL_ARGS second
-# (per-model overrides), "$@" last (user overrides everything). vLLM's argparse
-# takes the last-wins value for repeated flags.
-docker run "${RUN_ARGS[@]}" "$IMAGE" \
-  "$SNAPSHOT_CONTAINER" \
-  "${COMMON_ARGS[@]}" \
-  "${MODEL_ARGS[@]}" \
-  "$@"
+if [[ "$RUNTIME" == "llamacpp" ]]; then
+  # llama-server's own infrastructure flags. --alias takes the SAME alias list
+  # vLLM gets via --served-model-name (comma-separated here), so any client
+  # model ID keeps resolving; --metrics is OFF by default upstream and
+  # watchdog-vllm.sh needs the counters to spot a livelock.
+  LLAMACPP_ARGS=(
+    -m "$SNAPSHOT_CONTAINER/$GGUF_FILE"
+    --host 0.0.0.0
+    --port "$CONTAINER_PORT"
+    --alias "$(IFS=,; echo "${SERVED_ALIASES[*]}")"
+    --metrics
+  )
+  [[ -n "$MMPROJ_FILE" ]] && LLAMACPP_ARGS+=(--mmproj "$SNAPSHOT_CONTAINER/$MMPROJ_FILE")
+  # COMMON_ARGS is vLLM-only and deliberately NOT passed here.
+  mapfile -t USER_ARGS < <(translate_vllm_args "$@")
+  echo ">>> cli args    : ${MODEL_ARGS[*]} ${USER_ARGS[*]}"
+  docker run "${RUN_ARGS[@]}" "$LLAMACPP_IMAGE" \
+    "${LLAMACPP_ARGS[@]}" \
+    "${MODEL_ARGS[@]}" \
+    "${USER_ARGS[@]}"
+else
+  echo ">>> cli args    : ${MODEL_ARGS[*]} ${COMMON_ARGS[*]} $*"
+  # Order matters: COMMON_ARGS first (shared defaults), MODEL_ARGS second
+  # (per-model overrides), "$@" last (user overrides everything). vLLM's argparse
+  # takes the last-wins value for repeated flags.
+  docker run "${RUN_ARGS[@]}" "$IMAGE" \
+    "$SNAPSHOT_CONTAINER" \
+    "${COMMON_ARGS[@]}" \
+    "${MODEL_ARGS[@]}" \
+    "$@"
+fi
 
 echo ">>> restart     : $RESTART_POLICY (survives crash + reboot; healthcheck on /health)"
 echo ">>> started detached — tail with ./logs-vllm.sh, stop with ./stop-vllm.sh"

@@ -88,6 +88,39 @@ Everything lives in `run.sh` (~650 lines). The flow, top to bottom:
    with a 300s start period. Arg order is `COMMON_ARGS` → `MODEL_ARGS` → `"$@"`;
    vLLM's argparse is **last-wins**, so your CLI args override everything.
 
+### Two runtimes
+
+Almost everything here is vLLM. One model (`bonsai2`) sets `RUNTIME="llamacpp"`
+in its case block and launches `LLAMACPP_IMAGE` — prism-ml's llama.cpp fork,
+built locally by `./build-llamacpp.sh` — because vLLM *cannot* load its weights
+at any version: 402 of 851 tensors use ggml type id 142 (upstream ggml defines
+0–41) and the GGUF carries `prism.hadamard.*` metadata for a runtime activation
+transform. A loader that ignores it emits fluent garbage instead of failing, so
+never "just try it" on the stock engine to check.
+
+The branch is deliberately narrow — everything the rest of the stack depends on
+is preserved rather than special-cased downstream:
+
+- Same container name, same `CONTAINER_PORT`, same `vllm.model-key` label, same
+  `/health` healthcheck command (the fork's image ships `python3` and `curl`).
+- `SERVED_ALIASES` is passed as llama-server's comma-separated `--alias`, so
+  alias resolution behaves the same (it accepts any `model` value anyway).
+- The bearer token goes in as `LLAMA_API_KEY` instead of `VLLM_API_KEY`, so the
+  port is never tokenless either way. **Caveat:** llama-server puts `/metrics`
+  behind that key (vLLM leaves it open), which is why `watchdog-vllm.sh`
+  authenticates its scrape — without that, a livelock reads as an idle server.
+- `COMMON_ARGS` is vLLM-only and is **not** passed to llama-server.
+- `translate_vllm_args()` maps the UI override panel's vLLM spellings to
+  llama-server ones (`--max-model-len`→`-c`, `--max-num-seqs`→`-np`,
+  `--max-num-batched-tokens`→`-b`, fp8 KV→`q8_0`), drops
+  `--gpu-memory-utilization` (llama.cpp sizes KV from `-c`) with a warning, and
+  passes anything unrecognised straight through.
+
+`watchdog-vllm.sh` understands both metric namespaces (`vllm:*` and
+`llamacpp:*`). The UI is runtime-aware too: `parse_run_sh()` returns `runtime`
+per key, `fold_flags(..., short=True)` handles single-dash flags, and `-c` is
+surfaced as `--max-model-len` so the chat context meter reads one key.
+
 Resilience is layered: Docker's restart policy covers *exits* (crash, OOM,
 reboot); the healthcheck only labels a hung-but-alive server `unhealthy`;
 `watchdog-vllm.sh` is what actually restarts on a hang, and must be scheduled
@@ -152,7 +185,9 @@ one leaves the repo inconsistent.
 ### 1. `run.sh` — `select_model()` case block
 
 Add a new `<key>)` branch. Set `SNAPSHOT_REPO` to the HuggingFace repo and
-`MODEL_ARGS` to the launch flags. Write a comment block above it explaining:
+`MODEL_ARGS` to the launch flags. (A GGUF model that vLLM cannot load also sets
+`RUNTIME="llamacpp"` plus `GGUF_FILE` / `MMPROJ_FILE` — see `bonsai2`, and note
+its `MODEL_ARGS` are llama-server flags, not vLLM ones.) Write a comment block above it explaining:
 weights size, architecture, why each non-obvious flag is set, and the verified
 `ctx` ceiling (with what OOMs above it).
 

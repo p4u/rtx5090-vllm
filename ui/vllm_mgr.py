@@ -75,12 +75,16 @@ def parse_run_sh() -> dict:
         if not repo_m:
             continue
         spec_m = re.search(r'SPECULATOR_REPO="([^"]+)"', branch)
+        # RUNTIME="llamacpp" marks the models vLLM cannot load (see run.sh);
+        # their MODEL_ARGS are llama-server flags, so COMMON_ARGS never applies.
+        rt_m = re.search(r'RUNTIME="([^"]+)"', branch)
         args = _parse_bash_array(branch, "MODEL_ARGS")
         for key in label.split("|"):
             models[key] = {
                 "repo": repo_m.group(1),
                 "model_args": args,
                 "speculator": spec_m.group(1) if spec_m else None,
+                "runtime": rt_m.group(1) if rt_m else "vllm",
             }
     return models
 
@@ -108,20 +112,30 @@ def pi_models() -> dict:
         return {}
 
 
-def fold_flags(args: list[str]) -> dict:
+# llama-server uses single-dash flags (-c, -ngl, -fa); vLLM uses only `--`.
+# Requiring a letter after the dash keeps negative numbers (`--top-k -1`)
+# classified as values, not flags.
+_SHORT_FLAG = re.compile(r"^-{1,2}[A-Za-z]")
+
+
+def fold_flags(args: list[str], short: bool = False) -> dict:
     """Fold a CLI arg list into {flag: value|True|[values]} — last occurrence
     wins, mirroring vLLM's argparse. Multi-value flags (--served-model-name)
-    collect a list."""
+    collect a list. Set short=True for llama-server command lines, where a
+    single dash also starts a flag."""
+    def is_flag(tok: str) -> bool:
+        return bool(_SHORT_FLAG.match(tok)) if short else tok.startswith("--")
+
     flags: dict = {}
     i = 0
     while i < len(args):
         tok = args[i]
-        if not tok.startswith("--"):
+        if not is_flag(tok):
             i += 1
             continue
         vals = []
         j = i + 1
-        while j < len(args) and not args[j].startswith("--"):
+        while j < len(args) and not is_flag(args[j]):
             vals.append(args[j])
             j += 1
         flags[tok] = True if not vals else (vals[0] if len(vals) == 1 else vals)
@@ -174,12 +188,14 @@ def container_model_key(info: dict, run_models: dict) -> str | None:
 
 
 def container_api_key(info: dict) -> str | None:
-    """The VLLM_API_KEY the live container was launched with (docker inspect
-    Env is authoritative — covers manual launches with a different .env key).
-    None = the container's /v1 endpoints are unauthenticated."""
+    """The API key the live container was launched with (docker inspect Env is
+    authoritative — covers manual launches with a different .env key). vLLM
+    reads VLLM_API_KEY, llama-server reads LLAMA_API_KEY; run.sh sets whichever
+    the runtime wants from the same secret. None = /v1 is unauthenticated."""
     for e in (info.get("Config", {}).get("Env") or []):
-        if e.startswith("VLLM_API_KEY="):
-            return e.split("=", 1)[1] or None
+        for var in ("VLLM_API_KEY=", "LLAMA_API_KEY="):
+            if e.startswith(var):
+                return e.split("=", 1)[1] or None
     return None
 
 
@@ -449,14 +465,23 @@ def summarize_metrics(text: str) -> dict:
     """Curated dashboard view of vLLM's /metrics. Counter values are raw —
     the frontend computes deltas between polls for tokens/s."""
     m = parse_prometheus(text)
+    # Two engines, two namespaces for the same quantities: vLLM exports vllm:*,
+    # llama-server (RUNTIME=llamacpp models) exports llamacpp:*. _first/_total
+    # take the first name that is present, so listing both keeps one dashboard.
+    # llama-server publishes no KV-usage ratio and no latency histograms, so
+    # those read None there and the charts simply have no series.
     out = {
         "ts": time.time(),
-        "requests_running": _first(m, "vllm:num_requests_running"),
-        "requests_waiting": _first(m, "vllm:num_requests_waiting"),
+        "requests_running": _first(m, "vllm:num_requests_running",
+                                   "llamacpp:requests_processing"),
+        "requests_waiting": _first(m, "vllm:num_requests_waiting",
+                                   "llamacpp:requests_deferred"),
         # name drifted across vLLM versions — accept both
         "kv_cache_usage": _first(m, "vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"),
-        "prompt_tokens_total": _total(m, "vllm:prompt_tokens_total"),
-        "generation_tokens_total": _total(m, "vllm:generation_tokens_total"),
+        "prompt_tokens_total": _total(m, "vllm:prompt_tokens_total",
+                                      "llamacpp:prompt_tokens_total"),
+        "generation_tokens_total": _total(m, "vllm:generation_tokens_total",
+                                          "llamacpp:tokens_predicted_total"),
         "requests_success_total": _total(m, "vllm:request_success_total"),
         "preemptions_total": _total(m, "vllm:num_preemptions_total"),
         "ttft": _hist_stats(m, "vllm:time_to_first_token_seconds"),
@@ -464,8 +489,10 @@ def summarize_metrics(text: str) -> dict:
         "e2e_latency": _hist_stats(m, "vllm:e2e_request_latency_seconds"),
     }
     # EAGLE3 speculative decoding acceptance rate (gpt-oss)
-    acc = _total(m, "vllm:spec_decode_num_accepted_tokens_total")
-    draft = _total(m, "vllm:spec_decode_num_draft_tokens_total")
+    acc = _total(m, "vllm:spec_decode_num_accepted_tokens_total",
+                 "llamacpp:spec_decode_num_accepted_tokens_total")
+    draft = _total(m, "vllm:spec_decode_num_draft_tokens_total",
+                   "llamacpp:spec_decode_num_draft_tokens_total")
     if acc is not None and draft:
         out["spec_accept_rate"] = acc / draft
     return out
