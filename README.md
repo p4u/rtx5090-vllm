@@ -16,6 +16,12 @@ The server exposes an **OpenAI-compatible HTTP API** at
 `http://<host>:8080/v1`, so it drops straight into any OpenAI client, agent
 framework, or coding tool.
 
+There is also an optional [web UI](#web-ui): switch models with a click, watch
+the GPU while it serves, and talk to the running model in a full chat app with
+web browsing, a Python sandbox and file uploads.
+
+![The model lineup in the web UI — every tuned config as a card, one click to switch](docs/images/ui-models.png)
+
 ---
 
 ## Why this exists
@@ -124,7 +130,52 @@ bearer token, and a copy-paste curl. Set `UI_DOMAIN` in `.env` (bare hostname,
 or a full `https://` origin when behind a TLS proxy) and the UI builds the
 displayed URL from it instead of the browser's address.
 
-What it does:
+### A quick tour
+
+**Hand out one endpoint and one token.** The whole API surface is on the first
+screen: the URL to paste into any OpenAI client, a bearer token you can show,
+copy or renew (renewing kills the old one instantly), and the bind address the
+model itself listens on — which is never tokenless, wherever it binds.
+
+![API access panel: OpenAI endpoint URL, masked bearer token with show/copy/renew, a copy-paste curl example, and the model serving bind selector](docs/images/ui-api-access.png)
+
+**Watch the card while it works.** The Monitor tab samples the GPU and the
+engine every 5 seconds and keeps an hour of history — utilization, VRAM,
+temperature, power, KV cache, generation and prefill speed, requests in flight
+— plus the *effective* launch flags of the live container and a follow-mode log
+tail. The screenshot below is a 27B model mid-generation: 96% GPU, 501 W,
+178 tok/s.
+
+![Monitor tab under load: live tiles, an hour of history charts, effective launch flags and a streaming log panel](docs/images/ui-monitor.png)
+
+**Talk to the model that's running.** The Chat tab is a full chat app — streamed
+markdown, collapsible reasoning for thinking models, per-reply token counts and
+tok/s, and a context meter that tracks how much of the window you've used.
+
+![Chat tab: a streamed markdown answer with the reasoning fold expanded, token count and tokens/s on the reply, and the context meter above the composer](docs/images/ui-chat.png)
+
+**It can run code.** Turn on `PY` and the model gets a `run_python` tool. Each
+call runs in a throwaway sandbox container with no network and a read-only
+rootfs; matplotlib figures are captured and rendered inline, while the model
+only ever sees stdout and stderr.
+
+![Chat with the Python sandbox: generated code, an inline matplotlib bar chart, and the run_python debug log showing exit code and duration](docs/images/ui-chat-python.png)
+
+**It can read the web.** Turn on `WEB` and the model can search and fetch pages
+through [obscura](https://github.com/h4ckf0r0day/obscura), one throwaway
+container per fetch. Every query, URL and duration shows inline, with the
+browser engine's own trace behind an expandable debug log — so you can see
+exactly what it read.
+
+![Chat with web browsing: inline activity rows for each search and fetch, an expandable obscura debug log, and the model reasoning over what it found](docs/images/ui-chat-browsing.png)
+
+**And you can share the result.** One click publishes a read-only copy at an
+unguessable URL. Tick *Live* and viewers follow the conversation as it streams;
+revoking kills the link instantly.
+
+![Share panel: a public share URL with copy button, the Live checkbox for real-time following, and a Stop sharing button](docs/images/ui-chat-share.png)
+
+### Everything it does
 
 - **Model switching** — every model in the lineup as a card; Start/Stop/switch
   with a confirmation. Boot progress is streamed (download → load → ready),
@@ -139,7 +190,9 @@ What it does:
   history charts sampled every 5 s server-side (GPU utilization, VRAM,
   temperature, power, KV cache, generation/prefill speed, requests) with
   hover crosshairs; below them the effective launch flags of the live
-  container, `nvidia-smi` details, and a follow-mode log panel.
+  container, `nvidia-smi` details, and a follow-mode log panel. (A
+  `RUNTIME=llamacpp` model publishes fewer counters than vLLM — no KV-usage
+  ratio and no latency histograms — so those tiles read `—`.)
 - **API access panel** — a single bearer token for the OpenAI API, with
   show/copy/**renew** (renewing invalidates the old token instantly).
 - **Web browsing in chat** — the model can search the web and read pages,
