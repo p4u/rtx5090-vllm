@@ -11,9 +11,10 @@ set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
-# Disk needed for a first run: biggest model ~22 GB + llama.cpp build context
-# and image ~10 GB + vLLM image ~9 GB, with room to unpack.
-MIN_FREE_GB="${MIN_FREE_GB:-30}"
+# Disk needed for a first run, per location (see the disk section): weights for
+# the biggest model ~22 GB; images = llama.cpp build ~10 GB + vLLM ~9 GB.
+MIN_WEIGHTS_GB="${MIN_WEIGHTS_GB:-25}"
+MIN_IMAGES_GB="${MIN_IMAGES_GB:-20}"
 
 FAILED=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -123,14 +124,46 @@ else
 fi
 
 # ─── disk ───────────────────────────────────────────────────────────────────
-free_gb=$(df -BG --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')
-if [[ -n "$free_gb" ]]; then
-  if (( free_gb >= MIN_FREE_GB )); then
-    ok "disk: ${free_gb} GB free"
+# Two places fill up: cache/ (weights) and Docker's data root (images — vLLM
+# ~9 GB, the llama.cpp build ~10 GB). They are often the same disk, sometimes
+# not, so check each where it actually lives. Low space is only FATAL on a host
+# with nothing provisioned yet: once the UI image and some weights exist, `make`
+# mostly re-checks a running stack, and refusing that over free space would
+# break re-runs. run.sh/download-model.sh still fail loudly if a later download
+# really does not fit.
+disk_free_gb() { df -BG --output=avail "$1" 2>/dev/null | tail -1 | tr -dc '0-9'; }
+disk_dev()     { df --output=source "$1" 2>/dev/null | tail -1; }
+provisioned=""
+if command -v docker >/dev/null 2>&1 && docker image inspect vllm-ui >/dev/null 2>&1 \
+   && compgen -G "cache/models--*" >/dev/null; then
+  provisioned=1
+fi
+low_disk() {
+  if [[ -n "$provisioned" ]]; then
+    warn "$1 (fine for what is already here; a NEW model download may not fit)"
   else
-    bad "only ${free_gb} GB free here — need about ${MIN_FREE_GB} GB for images + weights"
-    fix "free space, or point the cache elsewhere with a symlink: ln -s /big/disk cache"
+    bad "$1"
+    fix "free space, or move it: symlink cache/ to a bigger disk (ln -s /big/disk cache),"
+    fix "or relocate Docker's data-root (/etc/docker/daemon.json)"
   fi
+}
+cache_path="cache"; [[ -e "$cache_path" ]] || cache_path="."
+docker_root="$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)"
+cache_free=$(disk_free_gb "$cache_path")
+if [[ -n "$docker_root" && "$(disk_dev "$docker_root")" != "$(disk_dev "$cache_path")" ]]; then
+  docker_free=$(disk_free_gb "$docker_root")
+  if [[ -n "$cache_free" ]]; then
+    (( cache_free >= MIN_WEIGHTS_GB )) && ok "disk (weights, $cache_path): ${cache_free} GB free" \
+      || low_disk "only ${cache_free} GB free for weights in $cache_path — need about ${MIN_WEIGHTS_GB} GB"
+  fi
+  if [[ -n "$docker_free" ]]; then
+    (( docker_free >= MIN_IMAGES_GB )) && ok "disk (images, $docker_root): ${docker_free} GB free" \
+      || low_disk "only ${docker_free} GB free for images in $docker_root — need about ${MIN_IMAGES_GB} GB"
+  fi
+elif [[ -n "$cache_free" ]]; then
+  need=$(( MIN_WEIGHTS_GB + MIN_IMAGES_GB ))
+  (( cache_free >= need )) && ok "disk: ${cache_free} GB free (weights + images share it)" \
+    || low_disk "only ${cache_free} GB free — need about ${need} GB for weights + images"
 fi
 
 echo ""

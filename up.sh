@@ -13,15 +13,17 @@
 # does the work that is actually missing.
 #
 # Usage:
-#   ./up.sh                  # default model (see DEFAULT_MODEL)
-#   MODEL=qwen38-27b ./up.sh # any key from ./run.sh --list
+#   ./up.sh                  # keep the current model; DEFAULT_MODEL on a fresh host
+#   MODEL=qwen38-27b ./up.sh # serve this key (replaces the current model)
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$SCRIPT_DIR"
 
 # Bonsai 2: smallest download in the lineup (7.4 GB) and the fastest decode, so
-# it is the least painful first run. Override with MODEL=<key>.
+# it is the least painful first run. Used only when no model container exists
+# yet; MODEL=<key> always wins (and replaces whatever is serving).
 DEFAULT_MODEL="bonsai2"
+MODEL_EXPLICIT="${MODEL:+1}"
 MODEL="${MODEL:-$DEFAULT_MODEL}"
 WAIT_HEALTHY_S="${WAIT_HEALTHY_S:-900}"
 
@@ -49,18 +51,26 @@ if [[ -f .env ]]; then
   unset _line _key _val
 fi
 
-# Where the UI answers on THIS host. TLS mode always serves 443 (see run-ui.sh);
-# probe loopback either way so DNS and public routing can't affect readiness.
+# Where the UI answers on THIS host. It binds UI_HOST only (ui/serve.py), so a
+# UI_HOST of a VPN address is NOT reachable on loopback — probe UI_HOST itself
+# unless it is the wildcard. Try https:443 and plain http:UI_PORT both: with
+# UI_TLS set, run-ui.sh still falls back to plain http when no certificate can
+# be obtained, and readiness must follow what actually came up, not the config.
+ui_addr="${UI_HOST:-0.0.0.0}"
+[[ "$ui_addr" == "0.0.0.0" || "$ui_addr" == "::" ]] && ui_addr="127.0.0.1"
+[[ "$ui_addr" == *:* ]] && ui_addr="[$ui_addr]"        # IPv6 literal in a URL
+UI_CANDIDATES=("http://${ui_addr}:${UI_PORT:-8090}")
 if [[ "${UI_TLS:-}" == "1" || "${UI_TLS:-}" == "letsencrypt" ]] && [[ -n "${UI_DOMAIN:-}" ]]; then
-  UI_LOCAL="https://127.0.0.1"
-  UI_PUBLIC="https://${UI_DOMAIN}"
-else
-  UI_LOCAL="http://127.0.0.1:${UI_PORT:-8090}"
-  _disp="${UI_HOST:-0.0.0.0}"; [[ "$_disp" == "0.0.0.0" ]] && _disp="localhost"
-  UI_PUBLIC="http://${_disp}:${UI_PORT:-8090}"
+  UI_CANDIDATES=("https://${ui_addr}" "${UI_CANDIDATES[@]}")
 fi
-
-ui_answers() { curl -skf --max-time 4 "$UI_LOCAL/" >/dev/null 2>&1; }
+UI_LOCAL=""
+ui_answers() {
+  local u
+  for u in "${UI_CANDIDATES[@]}"; do
+    curl -skf --max-time 4 "$u/" >/dev/null 2>&1 && { UI_LOCAL="$u"; return 0; }
+  done
+  return 1
+}
 
 # ── 2. the UI ───────────────────────────────────────────────────────────────
 if [[ "$(docker inspect -f '{{.State.Running}}' vllm-ui 2>/dev/null)" == "true" ]] && ui_answers; then
@@ -74,6 +84,17 @@ else
   ui_answers || { echo "up.sh: the UI did not come up — check ./logs-ui.sh" >&2; exit 1; }
 fi
 
+# What to tell the user follows what answered: https means the certificate
+# worked, so the public name applies; plain http reports the bind address.
+if [[ "$UI_LOCAL" == https://* ]]; then
+  UI_PUBLIC="https://${UI_DOMAIN}"
+else
+  _disp="${UI_HOST:-0.0.0.0}"; [[ "$_disp" == "0.0.0.0" ]] && _disp="localhost"
+  UI_PUBLIC="http://${_disp}:${UI_PORT:-8090}"
+  [[ "${UI_TLS:-}" == "1" || "${UI_TLS:-}" == "letsencrypt" ]] \
+    && echo "up.sh: warning — UI_TLS is set but the UI is serving plain http (no certificate; see make ui-logs)" >&2
+fi
+
 # The UI mints the bearer token that gates its OpenAI proxy; handing the same
 # token to the model keeps the model's own port from being open tokenless,
 # exactly as a launch from the UI would. state.json exists once the app has
@@ -82,10 +103,19 @@ TOKEN="$(python3 -c "import json;print(json.load(open('ui/data/state.json'))['ap
 [[ -n "$TOKEN" ]] || echo "up.sh: warning — could not read the UI token; the model port will not be gated" >&2
 
 # ── 3. the model ────────────────────────────────────────────────────────────
+# Only an EXPLICIT MODEL= switches what is served. A bare `make` re-run must not
+# swap out a model someone picked in the UI for the default, so without one it
+# keeps whatever the container already holds (restarting it if it is stopped),
+# and falls back to DEFAULT_MODEL only when there is no model container at all.
 running_key="$(docker inspect -f '{{index .Config.Labels "vllm.model-key"}}' vllm 2>/dev/null || true)"
 running_state="$(docker inspect -f '{{.State.Running}}' vllm 2>/dev/null || true)"
+[[ "$running_key" == "<no value>" ]] && running_key=""
+if [[ -z "$MODEL_EXPLICIT" && -n "$running_key" ]]; then
+  MODEL="$running_key"
+fi
 if [[ "$running_key" == "$MODEL" && "$running_state" == "true" ]]; then
   step "Model '$MODEL' already running — leaving it alone"
+  [[ -z "$MODEL_EXPLICIT" ]] && echo "    (switch with: make up MODEL=<key>; keys: make list)"
 else
   step "Starting model '$MODEL'"
   echo "    first run for a model downloads its weights, and a llama.cpp-backed"

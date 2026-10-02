@@ -15,9 +15,24 @@ There is no build, no test suite, no linter — this repo is bash + JSON config.
 
 `make` with no target runs `up.sh`, the one-command path from nothing to a
 served model (preflight → `run-ui.sh` → `run.sh` → wait for healthy). It is
-idempotent: already-running pieces are left alone. It also hands the model the
+idempotent: already-running pieces are left alone — **including the model**.
+Only an explicit `MODEL=` switches what is served; a bare `make` keeps whatever
+the container holds (e.g. a model picked in the UI) and uses `DEFAULT_MODEL`
+(`bonsai2`) only when no model container exists. It also hands the model the
 UI's bearer token, so a `make`-launched model port is gated exactly like a
 UI-launched one.
+
+`up.sh`'s UI readiness probe must follow how the UI actually binds: it listens
+on `UI_HOST` only (`ui/serve.py`), so the probe targets `UI_HOST` unless it is
+the wildcard, and it tries both https:443 and http:`UI_PORT` because
+`run-ui.sh` falls back to plain http when `UI_TLS` is set but no certificate
+can be obtained. Never hardcode `127.0.0.1` or infer the scheme from config.
+
+`preflight.sh` checks disk where it is actually consumed — `cache/` for
+weights, Docker's `DockerRootDir` for images (summed when they share a
+device). Low disk is fatal only on an unprovisioned host (no `vllm-ui` image
+or no cached weights); otherwise it warns, so a re-run of a working stack is
+never refused.
 
 Every command below also has a `Makefile` target (`make help` lists them; e.g.
 `make run MODEL=<key> ARGS="…"`, `make status`, `make ui`). The Makefile is a
@@ -27,7 +42,7 @@ keep them that way when adding commands.
 
 ```bash
 make                                 # DEFAULT: preflight → UI → model → wait → report
-make up MODEL=<key>                  # same, with a specific model (default: bonsai2)
+make up MODEL=<key>                  # same, and serve <key> (replaces the current model)
 ./preflight.sh                       # host checks only; halts with instructions
 ./update-vllm.sh                     # docker pull vllm/vllm-openai:latest
 ./run.sh                             # interactive picker
@@ -72,7 +87,7 @@ committing.
 
 ## Architecture
 
-Everything lives in `run.sh` (~650 lines). The flow, top to bottom:
+Everything lives in `run.sh` (~1000 lines). The flow, top to bottom:
 
 1. **`.env` sourcing** — simple `KEY=value` lines, real env vars win. Holds
    `HOST_IP` / `HOST_PORT` / `BIND_CIDR` / `HF_TOKEN` / `RESTART_POLICY`.
@@ -91,9 +106,13 @@ Everything lives in `run.sh` (~650 lines). The flow, top to bottom:
    like the main weights — see `gpt-oss`). Each branch carries a dense comment
    encoding the VRAM math and OOM boundaries.
 7. **`resolve_snapshot()`** — maps `user/repo` → `cache/models--user--repo/snapshots/<rev>/`,
-   auto-invoking `download-model.sh` on a miss. The whole `cache/` tree is
+   auto-invoking `download-model.sh` on a miss, choosing the newest revision
+   that holds a `config.json` (the newest dir alone can be a partial one left
+   by a later single-file fetch). The whole `cache/` tree is
    bind-mounted (snapshots symlink into `blobs/`, so mounting one snapshot dir
-   breaks). `RUNTIME=llamacpp` entries use **`resolve_cached_file()`** instead:
+   breaks). `download-model.sh`'s no-`hf`-CLI fallback runs as root in a
+   container: it passes repo/glob as env (never spliced into the inner script)
+   and `chown -h`s root-owned files back to the caller afterwards. `RUNTIME=llamacpp` entries use **`resolve_cached_file()`** instead:
    it fetches one named file at a time (a GGUF repo holds several mutually
    exclusive quants — Bonsai's F16 alone is 53.8 GB) and resolves each to
    whichever `snapshots/<rev>/` actually holds it, newest first. Those two files
@@ -125,12 +144,22 @@ is preserved rather than special-cased downstream:
   port is never tokenless either way. **Caveat:** llama-server puts `/metrics`
   behind that key (vLLM leaves it open), which is why `watchdog-vllm.sh`
   authenticates its scrape — without that, a livelock reads as an idle server.
+  The watchdog feeds that header to curl on stdin (`-H @-`), never argv:
+  the key goes into the container as env specifically to stay out of `ps`.
 - `COMMON_ARGS` is vLLM-only and is **not** passed to llama-server.
 - `translate_vllm_args()` maps the UI override panel's vLLM spellings to
-  llama-server ones (`--max-model-len`→`-c`, `--max-num-seqs`→`-np`,
-  `--max-num-batched-tokens`→`-b`, fp8 KV→`q8_0`), drops
-  `--gpu-memory-utilization` (llama.cpp sizes KV from `-c`) with a warning, and
-  passes anything unrecognised straight through.
+  llama-server ones (`--max-model-len`→`-c`,
+  `--max-num-seqs N`→`-np N --kv-unified`, `--max-num-batched-tokens`→`-b`,
+  fp8 KV→`q8_0`), drops `--gpu-memory-utilization` (llama.cpp sizes KV from
+  `-c`) with a warning, and passes anything unrecognised straight through.
+  Translate the *meaning*, not the spelling: a bare `-np` turns unified KV off
+  and splits `-c` across slots (verified: `-np 4` at 262K → 65K per request,
+  while the UI and pi still advertise 262K), hence `--kv-unified`.
+- `build-llamacpp.sh` pins `FORK_REF` to the fork commit bonsai2 was verified
+  on, not the `prism` branch tip — the golden rule applies to the engine too.
+  Moving the pin means rebuilding, re-running the bonsai2 checks (speed,
+  262K needle, vision, tools) and updating the SHA. It fetches by
+  `init`+`fetch`, since `git clone --branch` rejects a SHA.
 
 `watchdog-vllm.sh` understands both metric namespaces (`vllm:*` and
 `llamacpp:*`). The UI is runtime-aware too: `parse_run_sh()` returns `runtime`
@@ -277,7 +306,7 @@ Field rules:
 
 ### Helper scripts carry their own model lists — and they drift
 
-Three helpers duplicate the lineup (in sync as of the `qwen38-27b` addition).
+Three helpers duplicate the lineup (in sync as of the `bonsai2` addition).
 Update them alongside the five above, or fix the drift when you touch them:
 
 - `download-model.sh` → `DEFAULT_REPOS` (drives `--all`; a missing entry means
@@ -289,6 +318,14 @@ Update them alongside the five above, or fix the drift when you touch them:
 ## Conventions
 
 - Commit only when asked. Match the existing author (`Pau <pau@dabax.net>`).
+- **No host-specific or private data in tracked files.** Real domains, IPs,
+  paths and tokens live only in the gitignored `.env` (and `ui/data/`).
+  Examples use placeholders: `vllm.example.com`, RFC 5737 documentation
+  addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`) or a generic private
+  one (`10.200.0.10`), `/path/to/rtx5090-vllm`. `pi.models.json` ships with
+  `baseUrl: http://localhost:8090/v1` — users point it at their own UI.
+  Screenshots in `docs/images/` are anonymized the same way (API responses
+  rewritten in flight before capture). Check with `git grep` before committing.
 - Keep comments in `run.sh` dense and specific — they encode hard-won OOM
   boundaries; do not trim them to "clean up."
 - The container tracks `vllm/vllm-openai:latest`. Flags can break across vLLM

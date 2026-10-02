@@ -8,7 +8,7 @@
 # container the moment it's been unhealthy long enough.
 #
 # One-shot by design — schedule it, don't loop it. Examples:
-#   crontab:   * * * * * /home/p4u/rtx5090-vllm/watchdog-vllm.sh >> /home/p4u/rtx5090-vllm/logs/watchdog.log 2>&1
+#   crontab:   * * * * * /path/to/rtx5090-vllm/watchdog-vllm.sh >> /path/to/rtx5090-vllm/logs/watchdog.log 2>&1
 #   systemd:   a vllm-watchdog.service (Type=oneshot) + vllm-watchdog.timer (OnUnitActiveSec=60s)
 #
 # It also detects LIVELOCKED inference (seen in the field 2026-09-05 on
@@ -93,8 +93,18 @@ else
   api_key=$(docker inspect "$NAME" --format \
     '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
     | sed -n 's/^\(VLLM_API_KEY\|LLAMA_API_KEY\)=//p' | head -n1)
-  metrics=$(curl -sk --max-time 5 ${api_key:+-H "Authorization: Bearer $api_key"} "$METRICS_URL" 2>/dev/null \
-            || curl -sk --max-time 5 ${api_key:+-H "Authorization: Bearer $api_key"} "${METRICS_URL/http:/https:}" 2>/dev/null || true)
+  # The header goes in on stdin (`-H @-`), never argv: run.sh passes this key to
+  # the container as env precisely to keep it out of `ps`, and a curl command
+  # line is world-readable there for as long as the scrape runs.
+  scrape() {
+    if [[ -n "$api_key" ]]; then
+      printf 'Authorization: Bearer %s\n' "$api_key" | curl -sfk --max-time 5 -H @- "$1"
+    else
+      curl -sfk --max-time 5 "$1"
+    fi
+  }
+  metrics=$(scrape "$METRICS_URL" 2>/dev/null \
+            || scrape "${METRICS_URL/http:/https:}" 2>/dev/null || true)
   # Two metric namespaces, one meaning: vLLM exports vllm:*, llama-server
   # (RUNTIME=llamacpp models) exports llamacpp:* with different spellings for
   # the same three counters.

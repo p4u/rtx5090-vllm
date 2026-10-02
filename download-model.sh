@@ -59,13 +59,21 @@ download_one() {
         fi
     else
         echo ">>> hf CLI not found, using docker method..."
+        # repo/pattern go in as env, not spliced into the script: an unquoted
+        # glob like "*PQ2_0.gguf" would otherwise be expanded by the inner shell.
+        # The container runs as root, so hand the files back to the caller —
+        # root-owned blobs would break a later hf-CLI download into the same repo.
         docker run --rm -v "$CACHE_DIR:/cache" \
             -e "HF_HOME=/cache" \
+            -e "REPO=$repo" -e "PATTERN=$pattern" -e "OWNER=$(id -u):$(id -g)" \
             ${HF_TOKEN:+-e "HF_TOKEN=$HF_TOKEN"} \
-            python:3.12-slim bash -c "
-                pip install -q huggingface-hub[hf_xet] && \
-                hf download $repo ${pattern:+--include $pattern} --cache-dir /cache
-            "
+            python:3.12-slim bash -c '
+                pip install -q "huggingface-hub[hf_xet]" &&
+                hf download "$REPO" ${PATTERN:+--include "$PATTERN"} --cache-dir /cache
+                rc=$?
+                find /cache -user 0 -exec chown -h "$OWNER" {} + 2>/dev/null
+                exit $rc
+            '
     fi
 }
 

@@ -1,7 +1,7 @@
 {
   "providers": {
     "vllm": {
-      "baseUrl": "https://davinci.ac.upc.edu/v1",
+      "baseUrl": "http://localhost:8090/v1",
       "api": "openai-completions",
       "apiKey": "paste-token-from-ui-api-access-panel",
       "compat": {

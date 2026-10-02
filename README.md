@@ -49,7 +49,8 @@ Every model in the lineup has been booted and completion-tested on a real
 - **`jq`** for the test scripts (`test-chat.sh`, `bench-ctx.sh`).
 - **`hf` CLI** (`pip install "huggingface_hub[hf_xet]"`) for fast downloads —
   optional, a Docker-based fallback is built in.
-- Disk: ~30 GB free to start (images plus the 7.4 GB default model); ~20 GB per
+- Disk: ~45 GB free to start — ~25 GB where weights go (`cache/`) and ~20 GB
+  for Docker images (its data root, often the same disk); ~20 GB per
   additional model, ~315 GB for the whole lineup.
 
 No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
@@ -85,16 +86,18 @@ healthcheck, and prints where everything is:
   model       : bonsai2
 ```
 
-The default is [`bonsai2`](#two-runtimes) — the smallest download in the lineup
-and the fastest decode. Pick another with `make MODEL=<key>` (`make list` shows
-them all). Re-running `make` is cheap and safe: it leaves running pieces alone
-and only does what's actually missing.
+On a fresh host the model is [`bonsai2`](#two-runtimes) — the smallest
+download in the lineup and the fastest decode. Pick another with
+`make MODEL=<key>` (`make list` shows them all). Re-running `make` is cheap and
+safe: it leaves running pieces alone and only does what's actually missing —
+including the model. A bare `make` keeps whatever is already serving (say, a
+model you switched to in the UI); only an explicit `MODEL=` replaces it.
 
 Everything else is a target too:
 
 ```bash
 make list                        # model keys + descriptions
-make MODEL=gpt-oss               # switch the served model
+make MODEL=gpt-oss               # switch the served model (replaces the current one)
 make status                      # what's running
 make logs                        # follow the model's logs
 make test-chat PROMPT="Write a haiku about GPUs."
@@ -306,7 +309,8 @@ curl http://<host>:8090/v1/chat/completions \
 A bare `make run` from a shell keeps its own binding behavior (`HOST_IP` /
 `BIND_CIDR`) — the UI detects and manages externally-launched containers too,
 whatever address they bound. `pi.models.json` ships pointed at the proxy
-(`:8090/v1`) — paste your token into its `apiKey`.
+on this machine (`http://localhost:8090/v1`) — set `baseUrl` to your UI's
+address (`https://<domain>/v1` with TLS) and paste your token into its `apiKey`.
 
 **TLS.** Set `UI_TLS=1` (with `UI_DOMAIN`, optional `TLS_EMAIL`) in `.env`
 and `run-ui.sh` obtains a real Let's Encrypt certificate via acme.sh
@@ -378,14 +382,19 @@ So `run.sh` carries a `RUNTIME` field per model. `RUNTIME=llamacpp` launches the
 fork's `llama-server` instead of vLLM, and everything around it is unchanged: same
 container name and port, same `vllm.model-key` label, the same alias list (via
 `--alias`), the same bearer token (via `LLAMA_API_KEY`), and `/health` +
-`/metrics` for the healthcheck and watchdog. Build the image once:
+`/metrics` for the healthcheck and watchdog (llama-server keeps `/metrics`
+behind the token; the watchdog and UI send it). Override-panel flags are
+translated, keeping vLLM's meaning: `--max-num-seqs N` becomes `-np N
+--kv-unified`, so every slot still gets the full context. Build the image once:
 
 ```bash
 make build-llamacpp
 ```
 
-It detects your GPU's compute capability, clones the fork's `prism` branch and
-compiles CUDA kernels for that one architecture (~20 min). `run.sh` also builds
+It detects your GPU's compute capability, fetches the fork at the commit
+`bonsai2` was verified on (pinned in `build-llamacpp.sh`; `FORK_REF=prism`
+tracks the branch tip instead, untested) and compiles CUDA kernels for that one
+architecture (~20 min). `run.sh` also builds
 it automatically the first time you launch a `RUNTIME=llamacpp` model. The
 weights are two files, not the whole repo (`F16` there is 53.8 GB):
 

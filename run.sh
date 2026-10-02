@@ -747,9 +747,18 @@ resolve_snapshot() {
   fi
   # Newest revision first. A repo can have several cached once its upstream
   # revision moves; -t picks the current one (plain `ls` sorts by hash, which
-  # is arbitrary). Single-file entries use resolve_cached_file instead.
+  # is arbitrary). But the newest can also be PARTIAL — a later single-file
+  # fetch (make download GLOB=…) after the revision moved opens a fresh dir
+  # holding only that file — so prefer the newest that has a config.json, the
+  # one file every loadable checkpoint carries. Single-file entries use
+  # resolve_cached_file instead.
   local snap
-  snap=$(ls -1t "$cache_root" 2>/dev/null | head -1)
+  snap=$(ls -1dt "$cache_root"/*/config.json 2>/dev/null | head -1 || true)
+  if [[ -n "$snap" ]]; then
+    snap="$(basename "$(dirname "$snap")")"
+  else
+    snap=$(ls -1t "$cache_root" 2>/dev/null | head -1)
+  fi
   [[ -n "$snap" ]] || { echo "run.sh: no snapshot inside $cache_root" >&2; exit 1; }
   printf '%s' "$cache_root/$snap"
 }
@@ -763,7 +772,13 @@ translate_vllm_args() {
   while (( $# )); do
     case "$1" in
       --max-model-len)            out+=(-c "$2"); shift 2 ;;
-      --max-num-seqs)             out+=(-np "$2"); shift 2 ;;
+      # vLLM's --max-num-seqs leaves --max-model-len per SEQUENCE, from one
+      # shared KV pool. A bare -np does not: an explicit slot count turns
+      # llama-server's unified KV off and SPLITS -c between slots — VERIFIED,
+      # -np 4 at -c 262144 → n_ctx_slot 65536, while the UI and pi still
+      # advertise 262K. --kv-unified restores the vLLM meaning (the default
+      # auto -np already runs unified: 4 slots, n_ctx_slot 262144).
+      --max-num-seqs)             out+=(-np "$2" --kv-unified); shift 2 ;;
       --max-num-batched-tokens)   out+=(-b "$2"); shift 2 ;;
       --kv-cache-dtype)
         case "$2" in
@@ -907,7 +922,9 @@ RUN_ARGS=(
 # VLLM_API_KEY in .env to gate manual launches too. /health and /metrics stay
 # unauthenticated (healthcheck + monitoring depend on that).
 # llama-server reads the same secret from LLAMA_API_KEY (its --api-key flag,
-# as env so it stays out of `ps`); /health and /metrics stay open there too.
+# as env so it stays out of `ps`). Unlike vLLM it gates /metrics behind that key
+# (only /health stays open), so every /metrics scraper — watchdog-vllm.sh, the
+# UI's monitor — sends the key it reads from this container's Env.
 if [[ -n "${VLLM_API_KEY:-}" ]]; then
   if [[ "$RUNTIME" == "llamacpp" ]]; then
     RUN_ARGS+=(-e "LLAMA_API_KEY=$VLLM_API_KEY")
