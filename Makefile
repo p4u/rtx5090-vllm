@@ -1,23 +1,34 @@
 # Makefile — one entry point for every repository command.
 # All targets are thin wrappers around the scripts (the scripts stay the source
-# of truth and remain directly runnable). `make` / `make help` lists everything.
+# of truth and remain directly runnable). `make` brings the whole stack up;
+# `make help` lists everything.
 #
 # Variables:
-#   MODEL=<key>     model for run/test-all/bench     (make run MODEL=gpt-oss)
+#   MODEL=<key>     model for up/run/test-all/bench  (make up MODEL=qwen38-27b)
 #   ARGS="..."      extra vllm serve args for run    (make run MODEL=qwen36 ARGS="--max-model-len 65536")
 #   PROMPT="..."    prompt for test-chat
 #   REPO=user/repo  HuggingFace repo for download
+#   GLOB="*.gguf"   restrict a download to matching files
 
-.DEFAULT_GOAL := help
-.PHONY: help update run list stop logs test-chat test-all bench download \
-        download-all watchdog ui ui-stop ui-logs status validate build-llamacpp
+.DEFAULT_GOAL := up
+.PHONY: help up preflight update run list stop logs test-chat test-all bench \
+        download download-all watchdog ui ui-stop ui-logs status validate \
+        build-llamacpp
 
 help: ## Show this help
 	@echo "rtx5090-vllm — available targets:"
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 	  awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Variables: MODEL=<key>  ARGS=\"...\"  PROMPT=\"...\"  REPO=user/repo"
+	@echo "Variables: MODEL=<key>  ARGS=\"...\"  PROMPT=\"...\"  REPO=user/repo  GLOB=\"*.gguf\""
+
+# ─── everything at once ─────────────────────────────────────────────────────
+
+up: ## ⭐ Default: bring the whole stack up — UI + a served model (MODEL=<key>)
+	./up.sh
+
+preflight: ## Check this host has everything needed (run by `up`)
+	./preflight.sh
 
 # ─── serving ────────────────────────────────────────────────────────────────
 
@@ -61,9 +72,9 @@ validate: ## Validate pi.models.json syntax
 
 # ─── weights ────────────────────────────────────────────────────────────────
 
-download: ## Download one model (REPO=user/repo)
-	@test -n "$(REPO)" || { echo "usage: make download REPO=user/repo"; exit 1; }
-	./download-model.sh $(REPO)
+download: ## Download one model (REPO=user/repo, optional GLOB="*.gguf")
+	@test -n "$(REPO)" || { echo "usage: make download REPO=user/repo [GLOB='*.gguf']"; exit 1; }
+	./download-model.sh $(REPO) $(if $(GLOB),"$(GLOB)")
 
 download-all: ## Download every model in DEFAULT_REPOS
 	./download-model.sh --all

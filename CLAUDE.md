@@ -13,12 +13,22 @@ There is no build, no test suite, no linter — this repo is bash + JSON config.
 
 ## Commands
 
+`make` with no target runs `up.sh`, the one-command path from nothing to a
+served model (preflight → `run-ui.sh` → `run.sh` → wait for healthy). It is
+idempotent: already-running pieces are left alone. It also hands the model the
+UI's bearer token, so a `make`-launched model port is gated exactly like a
+UI-launched one.
+
 Every command below also has a `Makefile` target (`make help` lists them; e.g.
 `make run MODEL=<key> ARGS="…"`, `make status`, `make ui`). The Makefile is a
 thin wrapper — the scripts stay the source of truth, so a new script or flag
-means adding a matching target.
+means adding a matching target. README instructions are written in `make` form;
+keep them that way when adding commands.
 
 ```bash
+make                                 # DEFAULT: preflight → UI → model → wait → report
+make up MODEL=<key>                  # same, with a specific model (default: bonsai2)
+./preflight.sh                       # host checks only; halts with instructions
 ./update-vllm.sh                     # docker pull vllm/vllm-openai:latest
 ./run.sh                             # interactive picker
 ./run.sh <key> [extra vllm args]     # boot detached; downloads weights if missing
@@ -83,7 +93,13 @@ Everything lives in `run.sh` (~650 lines). The flow, top to bottom:
 7. **`resolve_snapshot()`** — maps `user/repo` → `cache/models--user--repo/snapshots/<rev>/`,
    auto-invoking `download-model.sh` on a miss. The whole `cache/` tree is
    bind-mounted (snapshots symlink into `blobs/`, so mounting one snapshot dir
-   breaks).
+   breaks). `RUNTIME=llamacpp` entries use **`resolve_cached_file()`** instead:
+   it fetches one named file at a time (a GGUF repo holds several mutually
+   exclusive quants — Bonsai's F16 alone is 53.8 GB) and resolves each to
+   whichever `snapshots/<rev>/` actually holds it, newest first. Those two files
+   genuinely can land under different revisions, since HuggingFace opens a new
+   snapshot dir whenever the repo revision moves, so each gets its own container
+   path rather than being joined to one assumed-complete snapshot.
 8. **`docker run`** — detached, `--restart unless-stopped`, `/health` healthcheck
    with a 300s start period. Arg order is `COMMON_ARGS` → `MODEL_ARGS` → `"$@"`;
    vLLM's argparse is **last-wins**, so your CLI args override everything.

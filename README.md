@@ -8,8 +8,8 @@ tool-call parser) verified to boot and serve on a 32 GB card. Pick a model and
 go — weights download automatically on first run.
 
 ```bash
-./run.sh                 # interactive picker → downloads if needed → serves on :8080
-./run.sh qwen36-27b-awq  # or name a model directly
+make                        # host check → web UI → a served model, ready to use
+make MODEL=qwen36-27b-awq   # ...with the model you name
 ```
 
 The server exposes an **OpenAI-compatible HTTP API** at
@@ -44,13 +44,19 @@ Every model in the lineup has been booted and completion-tested on a real
 - **NVIDIA driver** with CUDA 12.8+ (Blackwell sm_120 support).
 - **Docker** with the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
   (`--runtime nvidia --gpus all` must work).
-- **`jq`** and **`curl`** for the test scripts.
+- **`curl`**, **`git`** and **`python3`** — `git` clones the llama.cpp fork for
+  `RUNTIME=llamacpp` models, `python3` reads the UI token and validates JSON.
+- **`jq`** for the test scripts (`test-chat.sh`, `bench-ctx.sh`).
 - **`hf` CLI** (`pip install "huggingface_hub[hf_xet]"`) for fast downloads —
   optional, a Docker-based fallback is built in.
-- Disk: ~20 GB per model. The full lineup is ~315 GB.
+- Disk: ~30 GB free to start (images plus the 7.4 GB default model); ~20 GB per
+  additional model, ~315 GB for the whole lineup.
 
 No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
 `vllm/vllm-openai:latest` container.
+
+`make preflight` checks all of this and tells you exactly what to do about
+anything missing. `make` runs it for you before touching anything.
 
 ---
 
@@ -60,35 +66,65 @@ No local Python/PyTorch/CUDA install needed — vLLM runs entirely inside the
 git clone https://github.com/p4u/rtx5090-vllm.git
 cd rtx5090-vllm
 
-# 1. Pull the vLLM image (once).
-./update-vllm.sh
+cp .env.example .env     # then set UI_PASSWORD=<something real>
+make                     # that's it
+```
 
-# 2. Launch a model. Weights download to ./cache automatically if missing.
-./run.sh qwen36-27b-awq
+`make` is the whole install. It checks the host first and **stops with an
+instruction if anything is missing** (no Docker, no GPU access, no
+`UI_PASSWORD`, not enough disk) rather than failing twenty minutes into a
+build. Then it starts the web UI, downloads the default model's weights,
+builds whatever runtime image that model needs, serves it, waits for the
+healthcheck, and prints where everything is:
 
-# 3. Wait for boot (30–120s), then smoke-test it.
-./logs-vllm.sh              # watch until "Application startup complete"
-./test-chat.sh "Write a haiku about GPUs."
+```
+==> Up.
 
-# 4. Use it from any OpenAI client.
+  web UI      : http://localhost:8090/
+  OpenAI API  : http://localhost:8090/v1   (bearer token — API access panel in the UI)
+  model       : bonsai2
+```
+
+The default is [`bonsai2`](#two-runtimes) — the smallest download in the lineup
+and the fastest decode. Pick another with `make MODEL=<key>` (`make list` shows
+them all). Re-running `make` is cheap and safe: it leaves running pieces alone
+and only does what's actually missing.
+
+Everything else is a target too:
+
+```bash
+make list                        # model keys + descriptions
+make MODEL=gpt-oss               # switch the served model
+make status                      # what's running
+make logs                        # follow the model's logs
+make test-chat PROMPT="Write a haiku about GPUs."
+make stop                        # stop the model   (make ui-stop for the UI)
+make help                        # every target
+```
+
+And the API is plain OpenAI, from anywhere:
+
+```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"default","messages":[{"role":"user","content":"hi"}]}'
-
-# 5. Stop / switch.
-./stop-vllm.sh
-./run.sh gpt-oss
 ```
 
+> Every target is a thin wrapper around a script, and the scripts stay the
+> source of truth and remain directly runnable: `make run MODEL=gpt-oss` *is*
+> `./run.sh gpt-oss`. Only `make`/`make up` adds anything of its own — the
+> host checks and the ordering. `make help` lists every target.
+
 > **Binding:** by default the server binds `0.0.0.0:8080` (reachable on your
-> LAN). For localhost-only, run `HOST_IP=127.0.0.1 ./run.sh <model>`.
+> LAN). For localhost-only, run `HOST_IP=127.0.0.1 make MODEL=<key>` — make
+> passes the environment straight through to the script.
 >
 > **Restrict to one network:** set `BIND_CIDR=<subnet>` and the published port
 > binds only to this host's address on that subnet, so vLLM is reachable only
 > from that network — e.g. a WireGuard VPN:
 >
 > ```bash
-> BIND_CIDR=10.200.0.0/24 ./run.sh gpt-oss   # binds to the host's 10.200.0.x addr only
+> BIND_CIDR=10.200.0.0/24 make MODEL=gpt-oss   # binds to the host's 10.200.0.x addr only
 > ```
 >
 > `HOST_IP` (an explicit address) overrides `BIND_CIDR`. A socket binds a single
@@ -108,7 +144,7 @@ curl http://localhost:8080/v1/chat/completions \
 > cp .env.example .env      # then uncomment what you need
 > ```
 >
-> Real environment variables still override `.env` (e.g. `BIND_CIDR=… ./run.sh`).
+> Real environment variables still override `.env` (e.g. `BIND_CIDR=… make`).
 > `.env` is gitignored (it may hold `HF_TOKEN`); `.env.example` is committed.
 
 ---
@@ -119,9 +155,13 @@ A dockerized management UI + authenticated API gateway. Switch models with a
 click, tune launch flags, watch live vLLM metrics/logs/GPU stats, and gate the
 OpenAI API behind a bearer token.
 
+`make` already started it. To manage it on its own:
+
 ```bash
 # .env: set UI_PASSWORD=... (required), optionally UI_HOST / UI_PORT / UI_DOMAIN
-./run-ui.sh                  # builds + starts the vllm-ui container
+make ui                      # build + start the vllm-ui container
+make ui-logs                 # follow its logs
+make ui-stop                 # stop it
 # open http://<host>:8090/  → log in with UI_PASSWORD
 ```
 
@@ -252,7 +292,9 @@ same token as the proxy wherever it binds (only `/health` and `/metrics` stay
 unauthenticated, for the healthcheck and monitoring). A renewed token reaches
 the direct port on the next model start; the proxy always works because it
 authenticates upstream with the key the live container was launched with.
-Set `VLLM_API_KEY` in `.env` to gate manual `./run.sh` launches the same way:
+`make` does the same thing: it reads the UI's token and passes it to the
+model it starts. Set `VLLM_API_KEY` in `.env` to gate bare `make run` launches
+too:
 
 ```bash
 curl http://<host>:8090/v1/chat/completions \
@@ -261,7 +303,7 @@ curl http://<host>:8090/v1/chat/completions \
   -d '{"model":"default","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Manual `./run.sh` from a shell keeps its own binding behavior (`HOST_IP` /
+A bare `make run` from a shell keeps its own binding behavior (`HOST_IP` /
 `BIND_CIDR`) — the UI detects and manages externally-launched containers too,
 whatever address they bound. `pi.models.json` ships pointed at the proxy
 (`:8090/v1`) — paste your token into its `apiKey`.
@@ -279,15 +321,16 @@ password and token travel in plaintext — keep the UI behind a VPN.
 
 How it runs: the `vllm-ui` container mounts the docker socket and the repo (at
 its identical host path) and drives `./run.sh` — the hand-tuned launch configs
-stay the single source of truth. `./stop-ui.sh` / `./logs-ui.sh` manage it; the
+stay the single source of truth. `make ui-stop` / `make ui-logs` manage it; the
 UI's own state (token, overrides) lives in `ui/data/` (gitignored).
 
 ---
 
 ## Model lineup
 
-Fifteen models, each filling a specific role. Run `./run.sh --help` for the full
-per-model rationale, or `./run.sh` for the interactive picker.
+Fifteen models, each filling a specific role. `make list` prints the keys,
+`make run` with no `MODEL` gives an interactive picker, and `./run.sh --help`
+dumps the full per-model rationale (the VRAM math and OOM boundaries).
 
 All but one run on the vLLM image. `bonsai2` is the exception — it needs a second
 runtime (see [Two runtimes](#two-runtimes) below).
@@ -338,7 +381,7 @@ container name and port, same `vllm.model-key` label, the same alias list (via
 `/metrics` for the healthcheck and watchdog. Build the image once:
 
 ```bash
-./build-llamacpp.sh          # or: make build-llamacpp
+make build-llamacpp
 ```
 
 It detects your GPU's compute capability, clones the fork's `prism` branch and
@@ -347,9 +390,12 @@ it automatically the first time you launch a `RUNTIME=llamacpp` model. The
 weights are two files, not the whole repo (`F16` there is 53.8 GB):
 
 ```bash
-./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*PQ2_0.gguf"
-./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*mmproj-Q8_0.gguf"
+make download REPO=prism-ml/Ternary-Bonsai-2-27B-gguf GLOB="*PQ2_0.gguf"
+make download REPO=prism-ml/Ternary-Bonsai-2-27B-gguf GLOB="*mmproj-Q8_0.gguf"
 ```
+
+`make` does both for you — it fetches only the files the entry actually uses,
+never the whole repo.
 
 **The trade, measured on the 5090** (batch 1, streaming, TTFT excluded). Decode
 is far faster but decays with depth, where the vLLM dense entries stay flat;
@@ -398,21 +444,16 @@ prompt. Tool calling (`--jinja`), vision, and the Qwen thinking toggle
 - Per-model launch flags live in `select_model()` in `run.sh`. They are
   measured fits for 32 GB — read the inline comments before changing them.
 
-Every command is also wrapped by the `Makefile` — run `make` (or `make help`)
-for the full target list:
-
-```bash
-make run MODEL=gpt-oss ARGS="--max-model-len 65536"   # = ./run.sh gpt-oss ...
-make list | make stop | make logs | make status
-make test-chat PROMPT="Write a haiku"
-make download REPO=user/repo | make download-all
-make ui | make ui-stop | make ui-logs
-```
+`make help` lists every target; each one wraps a script, and the scripts below
+stay directly runnable if you prefer them:
 
 ```
-Makefile                # make help — wraps every script below as a target
+Makefile                # make — brings the whole stack up; make help lists targets
+up.sh                   # make up   — preflight → UI → model → wait → report
+preflight.sh            # make preflight — host checks, halts with instructions
 run.sh                  # main launcher: ./run.sh (picker) | ./run.sh <model> [args]
-download-model.sh       # ./download-model.sh <user/repo> | --all
+download-model.sh       # ./download-model.sh <user/repo> [glob] | --all
+build-llamacpp.sh       # build the llama.cpp fork image (RUNTIME=llamacpp models)
 stop-vllm.sh            # docker rm -f vllm
 update-vllm.sh          # docker pull vllm/vllm-openai:latest
 logs-vllm.sh            # docker logs -f --tail 200 vllm
@@ -435,7 +476,7 @@ The container is launched to survive failure, not just to start:
   (override with `RESTART_POLICY=...`). If vLLM exits — OOM, CUDA error, assert —
   or the host reboots, Docker brings it back automatically (with exponential
   backoff, so a genuinely broken config won't hammer the GPU). It stays down only
-  when you `./stop-vllm.sh` it. *Verified:* killing the engine process restarts the
+  when you `make stop` it. *Verified:* killing the engine process restarts the
   container and it recovers to `healthy` on its own.
 - **Healthcheck.** Docker probes `/health` (`docker ps` shows `healthy`/`unhealthy`).
   A long `--health-start-period` (5 min) avoids false alarms during slow model
@@ -459,25 +500,31 @@ The container is launched to survive failure, not just to start:
 
 ```bash
 # Push context above the per-model default:
-./run.sh qwen3-coder --max-model-len 262144
+make run MODEL=qwen3-coder ARGS="--max-model-len 262144"
 
 # Free more VRAM for KV:
-./run.sh qwen36 --gpu-memory-utilization 0.97
+make run MODEL=qwen36 ARGS="--gpu-memory-utilization 0.97"
 
 # Different bind address / port:
-HOST_IP=127.0.0.1 HOST_PORT=9090 ./run.sh gemma4
+HOST_IP=127.0.0.1 HOST_PORT=9090 make run MODEL=gemma4
 
 # Any extra vllm serve args are forwarded verbatim:
-./run.sh qwen3-coder --max-num-seqs 64
+make run MODEL=qwen3-coder ARGS="--max-num-seqs 64"
 ```
+
+`make run` starts the model alone; `make up` (the default) is the one that also
+brings up the UI and waits for health. A `RUNTIME=llamacpp` model takes
+llama-server flags instead, and `run.sh` translates the vLLM spellings above —
+see [Two runtimes](#two-runtimes).
 
 Arg precedence is last-wins: shared defaults → per-model flags → your CLI args.
 
 ### Download ahead of time
 
 ```bash
-./download-model.sh --all                                   # every model in the lineup
-./download-model.sh cyankiwi/Qwen3.6-27B-AWQ-INT4           # a specific repo
+make download-all                                        # every model in the lineup
+make download REPO=cyankiwi/Qwen3.6-27B-AWQ-INT4         # a specific repo
+make download REPO=user/repo GLOB="*.gguf"               # just the matching files
 ```
 
 Export `HF_TOKEN=hf_...` to avoid unauthenticated HuggingFace rate limits.
@@ -540,7 +587,7 @@ populating `tool_calls`. Common parsers:
 
 - **One container, one port.** Only one model serves at a time on `:8080`.
   `run.sh` stops any previous container before starting. Switching models means
-  `./stop-vllm.sh` then `./run.sh <other>` (30–120s reload).
+  `make MODEL=<other>` (30–120s reload).
 - **Root-owned cache after first run.** The container runs as root internally,
   so `cache/` and `logs/` end up root-owned, which breaks user-mode
   `hf download`. Fix once: `sudo chown -R "$USER:$USER" cache logs`.
@@ -568,4 +615,4 @@ populating `tool_calls`. Common parsers:
    flags and a comment explaining the VRAM/context math.
 5. Add the key + description to the `MODELS` array and `SERVED_ALIASES`.
 6. Add the repo to `DEFAULT_REPOS` in `download-model.sh`.
-7. Verify with `./test-all-models.sh <key>`.
+7. Verify with `make test-all MODEL=<key>`.

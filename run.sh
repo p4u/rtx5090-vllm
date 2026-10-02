@@ -745,9 +745,11 @@ resolve_snapshot() {
     echo "       Try manually: ./download-model.sh $repo" >&2
     exit 1
   fi
-  # Pick the most recent snapshot (there's usually only one).
+  # Newest revision first. A repo can have several cached once its upstream
+  # revision moves; -t picks the current one (plain `ls` sorts by hash, which
+  # is arbitrary). Single-file entries use resolve_cached_file instead.
   local snap
-  snap=$(ls -1 "$cache_root" | head -1)
+  snap=$(ls -1t "$cache_root" 2>/dev/null | head -1)
   [[ -n "$snap" ]] || { echo "run.sh: no snapshot inside $cache_root" >&2; exit 1; }
   printf '%s' "$cache_root/$snap"
 }
@@ -781,6 +783,35 @@ translate_vllm_args() {
   if (( ${#out[@]} )); then printf '%s\n' "${out[@]}"; fi
 }
 
+# Locate ONE file inside a repo's cache, downloading just that file if absent.
+#
+# For GGUF entries we fetch file-by-file rather than whole-repo: such a repo
+# ships several mutually exclusive quants of the same model (Bonsai's F16 is
+# 53.8 GB on its own), so resolve_snapshot's whole-repo download — right for
+# vLLM, where every shard is needed — would pull ~60 GB to use 7.4 GB of it.
+#
+# The catch is that HuggingFace opens a NEW snapshots/<rev>/ directory whenever
+# the repo revision changes, so two files fetched weeks apart legitimately live
+# under different revisions and NO single snapshot holds both. Resolve each file
+# to wherever it actually is (newest revision first) instead of assuming one
+# complete snapshot exists.
+resolve_cached_file() {
+  local repo="$1" want="$2"
+  local root="$SCRIPT_DIR/cache/models--${repo//\//--}/snapshots"
+  local hit
+  hit=$(ls -1dt "$root"/*/"$want" 2>/dev/null | head -1 || true)
+  if [[ -z "$hit" ]]; then
+    echo ">>> $want not in cache — downloading it from $repo..." >&2
+    "$SCRIPT_DIR/download-model.sh" "$repo" "*$want" >&2
+    hit=$(ls -1dt "$root"/*/"$want" 2>/dev/null | head -1 || true)
+  fi
+  [[ -n "$hit" ]] || {
+    echo "run.sh: $want not found in $repo even after downloading" >&2
+    echo "  try: make download REPO=$repo GLOB='*$want'" >&2
+    exit 1; }
+  printf '%s' "$hit"
+}
+
 # ─── Dispatch ────────────────────────────────────────────────────────────
 case "${1:-}" in
   -h|--help) usage ;;
@@ -811,9 +842,22 @@ fi
 
 # HF cache snapshot/ entries are symlinks into ../../blobs/<hash>, so we must
 # bind-mount the whole cache/ tree (not just the snapshot dir).
-SNAPSHOT_HOST="$(resolve_snapshot "$SNAPSHOT_REPO")"
-SNAPSHOT_REL="${SNAPSHOT_HOST#$SCRIPT_DIR/cache/}"
-SNAPSHOT_CONTAINER="/root/.cache/huggingface/$SNAPSHOT_REL"
+cache_path_in_container() { printf '/root/.cache/huggingface/%s' "${1#$SCRIPT_DIR/cache/}"; }
+
+if [[ "$RUNTIME" == "llamacpp" ]]; then
+  # Per-file, because these two may sit under different revisions (see
+  # resolve_cached_file). Each gets its own container path.
+  GGUF_HOST="$(resolve_cached_file "$SNAPSHOT_REPO" "$GGUF_FILE")"
+  GGUF_CONTAINER="$(cache_path_in_container "$GGUF_HOST")"
+  if [[ -n "$MMPROJ_FILE" ]]; then
+    MMPROJ_HOST="$(resolve_cached_file "$SNAPSHOT_REPO" "$MMPROJ_FILE")"
+    MMPROJ_CONTAINER="$(cache_path_in_container "$MMPROJ_HOST")"
+  fi
+  SNAPSHOT_HOST="$(dirname "$GGUF_HOST")"   # display only
+else
+  SNAPSHOT_HOST="$(resolve_snapshot "$SNAPSHOT_REPO")"
+fi
+SNAPSHOT_CONTAINER="$(cache_path_in_container "$SNAPSHOT_HOST")"
 
 # Speculative-decoding draft head (if the model sets one): ensure it's in the
 # mounted cache so vLLM resolves it by repo id offline, like the main weights.
@@ -827,10 +871,6 @@ if [[ "$RUNTIME" == "llamacpp" ]]; then
     "$SCRIPT_DIR/build-llamacpp.sh" || {
       echo "run.sh: failed to build $LLAMACPP_IMAGE" >&2; exit 1; }
   fi
-  [[ -f "$SNAPSHOT_HOST/$GGUF_FILE" ]] || {
-    echo "run.sh: $GGUF_FILE not in $SNAPSHOT_HOST" >&2
-    echo "  fetch it with: ./download-model.sh $SNAPSHOT_REPO '*$GGUF_FILE'" >&2
-    exit 1; }
 fi
 
 # Stop any previous container first; only one binds the port.
@@ -895,13 +935,13 @@ if [[ "$RUNTIME" == "llamacpp" ]]; then
   # model ID keeps resolving; --metrics is OFF by default upstream and
   # watchdog-vllm.sh needs the counters to spot a livelock.
   LLAMACPP_ARGS=(
-    -m "$SNAPSHOT_CONTAINER/$GGUF_FILE"
+    -m "$GGUF_CONTAINER"
     --host 0.0.0.0
     --port "$CONTAINER_PORT"
     --alias "$(IFS=,; echo "${SERVED_ALIASES[*]}")"
     --metrics
   )
-  [[ -n "$MMPROJ_FILE" ]] && LLAMACPP_ARGS+=(--mmproj "$SNAPSHOT_CONTAINER/$MMPROJ_FILE")
+  [[ -n "$MMPROJ_FILE" ]] && LLAMACPP_ARGS+=(--mmproj "$MMPROJ_CONTAINER")
   # COMMON_ARGS is vLLM-only and deliberately NOT passed here.
   mapfile -t USER_ARGS < <(translate_vllm_args "$@")
   echo ">>> cli args    : ${MODEL_ARGS[*]} ${USER_ARGS[*]}"
