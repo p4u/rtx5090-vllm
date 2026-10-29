@@ -341,7 +341,7 @@ runtime (see [Two runtimes](#two-runtimes) below).
 
 | key                | params        | quant      | ctx (5090) | vision | role |
 |--------------------|---------------|------------|------------|--------|------|
-| `bonsai2`          | 27B dense+vis | ternary PQ2_0 | 262K    | ✓      | ⭐ **Fastest**: ~141 t/s decode, 6.8 GB weights — runs on the llama.cpp fork, **not vLLM** |
+| `bonsai2`          | 27B dense+vis | ternary PQ2_0 | 262K    | ✓      | ⭐ **Fastest**: ~157 t/s decode, 6.8 GB weights — runs on the llama.cpp fork, **not vLLM** |
 | `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Qwen3.8 **quality** flavor: dynamic quant, mm off (needs vLLM ≥0.28) |
 | `qwen38-fast`      | 27B dense     | NVFP4+MTP  | 262K       | —      | Qwen3.8 **speed** flavor: MTP spec decode ~44.7 t/s (1.6×), mm off (≥0.28) |
 | `qwen38-vision`    | 27B dense+vis | NVFP4      | 131K       | ✓      | Qwen3.8 **vision** flavor: image input, ctx pays for the encoder (≥0.28) |
@@ -358,7 +358,7 @@ runtime (see [Two runtimes](#two-runtimes) below).
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
 `ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV.
-The container tracks `vllm/vllm-openai:latest` (currently **0.28.0**). Most
+The container tracks `vllm/vllm-openai:latest` (currently **0.32.0**: every key passed `test-all-models.sh` on it; the ctx ceilings were measured on 0.28.0). Most
 values were first confirmed on 0.22.1; the two `unsloth` NVFP4-dynamic entries
 require vLLM ≥ 0.24. The old LilaRest text-only Gemma 4 was **removed** — its
 quantized `lm_head` breaks on vLLM ≥ 0.24; `gemma4-vision` (unquantized head)
@@ -426,7 +426,7 @@ prompt. Tool calling (`--jinja`), vision, and the Qwen thinking toggle
 
 ### Picking one at a glance
 
-- **Fastest decode, with vision** → `bonsai2` (~141 t/s ternary 27B on llama.cpp; prefill is the trade)
+- **Fastest decode, with vision** → `bonsai2` (~157 t/s ternary 27B on llama.cpp; prefill is the trade)
 - **Best overall quality (newest Qwen)** → `qwen38-27b` (Qwen3.8 dense, dynamic NVFP4, ~28.5 t/s decode, prefill 6.3K→2.1K t/s from 38K→259K ctx)
 - **Newest Qwen, faster** → `qwen38-fast` (same model, MTP speculative decode ~44.7 t/s, standard quant)
 - **Newest Qwen with vision** → `qwen38-vision` (image input, 131K)

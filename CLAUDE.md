@@ -120,7 +120,10 @@ Everything lives in `run.sh` (~1000 lines). The flow, top to bottom:
    snapshot dir whenever the repo revision moves, so each gets its own container
    path rather than being joined to one assumed-complete snapshot.
 8. **`docker run`** — detached, `--restart unless-stopped`, `/health` healthcheck
-   with a 300s start period. Arg order is `COMMON_ARGS` → `MODEL_ARGS` → `"$@"`;
+   with a 300s start period. Before the `docker rm -f` of the old container,
+   run.sh refuses (naming the owner) if *another* container already publishes
+   an overlapping `HOST_IP:HOST_PORT` — Docker only says "port is already
+   allocated" after the old model is gone, leaving the new one in `Created`. Arg order is `COMMON_ARGS` → `MODEL_ARGS` → `"$@"`;
    vLLM's argparse is **last-wins**, so your CLI args override everything.
 
 ### Two runtimes

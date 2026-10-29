@@ -18,13 +18,14 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 IMAGE="${LLAMACPP_IMAGE:-bonsai-llamacpp:prism}"
 FORK_URL="${FORK_URL:-https://github.com/PrismML-Eng/llama.cpp}"
-# Pinned to the commit bonsai2 was verified on (branch `prism`, 2026-09-17:
-# the speed, 262K-context, needle, vision and tool-call numbers in run.sh).
+# Pinned to the commit bonsai2 was verified on (branch `prism`, c96baf4 of
+# 2026-10-25, re-verified 2026-10-29: speed, 258K needle, vision, tool calls —
+# see run.sh; previous pin 1a07bfa of 2026-09-17).
 # The branch tip moves, so building it would hand a fresh clone an engine
 # nobody here has tested. To move the pin: build with FORK_REF=prism, re-run
 # the bonsai2 checks, then update this SHA. Do NOT build prism-v6 (stale
 # mid-migration) or prism-v5 (frozen, legacy format only).
-FORK_REF="${FORK_REF:-1a07bfa5f4144274c8f1c9963821dd9d9a51854b}"
+FORK_REF="${FORK_REF:-c96baf4abe24d11a50f326e40b6223b687449d63}"
 WORK_DIR="${WORK_DIR:-$SCRIPT_DIR/.build/llamacpp}"
 
 # CUDA arch: compile for THIS host's GPU only — building every architecture

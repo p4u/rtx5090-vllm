@@ -11,7 +11,7 @@
       "models": [
         {
           "id": "bonsai2",
-          "name": "Bonsai 2 27B ternary PQ2_0 prism-ml (llama.cpp fork) — 262K, ⭐ FASTEST 27B (~141 t/s), vision + tools",
+          "name": "Bonsai 2 27B ternary PQ2_0 prism-ml (llama.cpp fork) — 262K, ⭐ FASTEST 27B (~157 t/s), vision + tools",
           "reasoning": true,
           "input": [
             "text",

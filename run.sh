@@ -30,8 +30,9 @@
 # Pull the latest image with ./update-vllm.sh.
 #
 # ─── Model lineup (measured on RTX 5090) ────────────────────────────────────
-# Image is vllm/vllm-openai:latest (currently 0.28.0; qwen38-27b REQUIRES
-# >= 0.28 — the Qwen3.8 arch is missing before it). The two unsloth qwen36
+# Image is vllm/vllm-openai:latest (currently 0.32.0 — every key passed
+# boot+completion on it 2026-10-29; the ctx ceilings were verified on 0.28.0;
+# qwen38-27b REQUIRES >= 0.28 — the Qwen3.8 arch is missing before it). The two unsloth qwen36
 # entries REQUIRE vLLM >= 0.24 (quantized lm_head). NOTE: the LilaRest text-only
 # Gemma 4 (gemma4-coder) was REMOVED — its quantized lm_head breaks the gemma4.py
 # tie_weights() path on vLLM >= 0.24; gemma4-vision (unquantized lm_head) replaces
@@ -44,7 +45,7 @@
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
-#   bonsai2            27B dense+vis  ternary PQ2_0 262K    jinja         ⭐ FASTEST: ~141 t/s, 6.8 GB weights [llama.cpp fork, NOT vLLM]
+#   bonsai2            27B dense+vis  ternary PQ2_0 262K    jinja         ⭐ FASTEST: ~157 t/s, 6.8 GB weights [llama.cpp fork, NOT vLLM]
 #   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ Qwen3.8 QUALITY flavor (mm off) [needs vLLM>=0.28]
 #   qwen38-fast        27B dense      NVFP4+MTP     262K    qwen3_xml     Qwen3.8 SPEED flavor, ~44.7 t/s spec decode (mm off) [>=0.28]
 #   qwen38-vision      27B dense+vis  NVFP4         131K    qwen3_xml     Qwen3.8 VISION flavor, image input [>=0.28]
@@ -63,7 +64,7 @@
 #   ctx = verified boot+completion ceiling on a single 32 GB 5090.
 #
 # ─── Picking one at a glance ────────────────────────────────────────────────
-#   Fastest decode, and vision too?         → bonsai2        (~141 t/s ternary 27B, llama.cpp)
+#   Fastest decode, and vision too?         → bonsai2        (~157 t/s ternary 27B, llama.cpp)
 #   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
 #   Newest Qwen but faster (some quality)?  → qwen38-fast    (MTP spec decode, ~1.6x)
 #   Newest Qwen with vision?                → qwen38-vision  (image input, 131K)
@@ -216,7 +217,7 @@ usage() {
 # Interactive picker, shown when run.sh is invoked with no arguments.
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
-  "bonsai2|27B dense ternary PQ2_0 (prism-ml), 262K, vision — ⭐ FASTEST 27B: ~141 t/s, 6.8 GB weights [llama.cpp fork, not vLLM]"
+  "bonsai2|27B dense ternary PQ2_0 (prism-ml), 262K, vision — ⭐ FASTEST 27B: ~157 t/s, 6.8 GB weights [llama.cpp fork, not vLLM]"
   "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8 QUALITY flavor, mm off (needs vLLM>=0.28)"
   "qwen38-fast|27B dense NVFP4+MTP (sakamakismile), 262K — Qwen3.8 SPEED flavor: MTP spec decode, mm off (needs vLLM>=0.28)"
   "qwen38-vision|27B dense NVFP4 (Inferact), 131K — Qwen3.8 VISION flavor: image input (needs vLLM>=0.28)"
@@ -390,6 +391,10 @@ select_model() {
       # @40K, 1,896 @131K, 1,202 @250K (vLLM does ~2,100 at 259K). Deep prompts
       # cost real wall-clock: a 250K prefill is ~3.5 min. Short-to-mid context
       # chat is where this model wins outright.
+      # Fork pin c96baf4 (2026-10-25, fused PQ2_0 Hadamard/q8_1 kernels): short-
+      # prompt decode 156.8 t/s (server timings, vs 142.9 on the old pin at the
+      # same measure); needle recalled at 257,699 tokens, prefill 1,168 t/s
+      # there; vision + tool calls re-checked.
       #
       # --jinja is REQUIRED for OpenAI tool calling (verified: emits proper
       # tool_calls). Thinking is always on (reasoning_content streams); cap it
@@ -886,6 +891,27 @@ if [[ "$RUNTIME" == "llamacpp" ]]; then
     "$SCRIPT_DIR/build-llamacpp.sh" || {
       echo "run.sh: failed to build $LLAMACPP_IMAGE" >&2; exit 1; }
   fi
+fi
+
+# Another stack on this host may already publish the same port (seen: a compose
+# project on the same VPN address grabbed it at boot). Docker only reports that
+# as "port is already allocated" AFTER the rm -f below — the old model is gone
+# and the new container sits in `Created` — so check first and name the owner.
+# Overlap = same host port and same address, or either side on the wildcard.
+port_owners=$(docker ps --filter "publish=$HOST_PORT" --format '{{.Names}}' 2>/dev/null \
+  | while read -r n; do
+      [[ "$n" == "$CONTAINER_NAME" ]] && continue
+      docker inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostIp}} {{.HostPort}}{{"\n"}}{{end}}{{end}}' "$n" 2>/dev/null \
+        | while read -r ip port; do
+            [[ "$port" == "$HOST_PORT" ]] || continue
+            [[ -z "$ip" || "$ip" == "0.0.0.0" || "$HOST_IP" == "0.0.0.0" || "$ip" == "$HOST_IP" ]] \
+              && { echo "$n"; break; }
+          done
+    done)
+if [[ -n "$port_owners" ]]; then
+  echo "run.sh: ${HOST_IP}:${HOST_PORT} is already published by another container: ${port_owners//$'\n'/, }" >&2
+  echo "run.sh: pick a free port (HOST_PORT=… in .env, or the UI's \"Model serving bind\") — nothing was stopped" >&2
+  exit 1
 fi
 
 # Stop any previous container first; only one binds the port.
