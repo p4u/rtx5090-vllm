@@ -42,10 +42,13 @@
 # Most entries run on that vLLM image. bonsai2 is the exception: RUNTIME=llamacpp
 # launches it on a locally-built prism-ml llama.cpp fork (./build-llamacpp.sh),
 # the only engine that can execute its ternary tensors — see its case block.
+# qwen38-uncensored rides the same fork image (plain GGUF + embedded MTP head:
+# llama.cpp's draft-mtp beats every vLLM build of it on this card).
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
 #   bonsai2            27B dense+vis  ternary PQ2_0 262K    jinja         ⭐ FASTEST: ~157 t/s, 6.8 GB weights [llama.cpp fork, NOT vLLM]
+#   qwen38-uncensored  27B dense+vis  Q5_K_M+MTP    480K    jinja         Qwen3.8 abliterated (RVN), ~100 t/s, YaRN x4 + q4_0 KV [llama.cpp fork]
 #   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ Qwen3.8 QUALITY flavor (mm off) [needs vLLM>=0.28]
 #   qwen38-fast        27B dense      NVFP4+MTP     262K    qwen3_xml     Qwen3.8 SPEED flavor, ~44.7 t/s spec decode (mm off) [>=0.28]
 #   qwen38-vision      27B dense+vis  NVFP4         131K    qwen3_xml     Qwen3.8 VISION flavor, image input [>=0.28]
@@ -65,6 +68,7 @@
 #
 # ─── Picking one at a glance ────────────────────────────────────────────────
 #   Fastest decode, and vision too?         → bonsai2        (~157 t/s ternary 27B, llama.cpp)
+#   Uncensored, longest context (480K)?     → qwen38-uncensored (abliterated Qwen3.8, MTP, llama.cpp)
 #   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
 #   Newest Qwen but faster (some quality)?  → qwen38-fast    (MTP spec decode, ~1.6x)
 #   Newest Qwen with vision?                → qwen38-vision  (image input, 131K)
@@ -186,7 +190,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  bonsai2 qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
+  bonsai2 qwen38-uncensored qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -218,6 +222,7 @@ usage() {
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
   "bonsai2|27B dense ternary PQ2_0 (prism-ml), 262K, vision — ⭐ FASTEST 27B: ~157 t/s, 6.8 GB weights [llama.cpp fork, not vLLM]"
+  "qwen38-uncensored|27B dense Q5_K_M+MTP abliterated (0bserverx RVN), 480K, vision — uncensored Qwen3.8, ~100 t/s [llama.cpp fork]"
   "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8 QUALITY flavor, mm off (needs vLLM>=0.28)"
   "qwen38-fast|27B dense NVFP4+MTP (sakamakismile), 262K — Qwen3.8 SPEED flavor: MTP spec decode, mm off (needs vLLM>=0.28)"
   "qwen38-vision|27B dense NVFP4 (Inferact), 131K — Qwen3.8 VISION flavor: image input (needs vLLM>=0.28)"
@@ -410,6 +415,59 @@ select_model() {
         -c 262144
         -ngl 99
         -fa on
+        --jinja
+        --temp 1.0
+        --top-p 0.95
+        --top-k 20
+      )
+      ;;
+    qwen38-uncensored)
+      # 0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF, "RVN":
+      # Qwen3.8-27B with refusals removed by ARA (Heretic's arbitrary-rank
+      # ablation) plus two refinement passes. Publisher's numbers: refusals
+      # 0-1/100 harmful prompts, KL 0.0085 vs base — the lowest-damage, fewest-
+      # refusal Qwen3.8 abliteration found (2026-10-29 survey; JonathanColetti
+      # 12/100 KL 0.119, llmfan46 3/100 KL 0.024, the NVFP4/AWQ vLLM builds
+      # publish worse or no numbers). GGUF-only, so it runs on the llama.cpp
+      # fork image (standard quants; qwen35 arch + draft-mtp both supported).
+      #
+      # Q5_K_M "-multilingual-mtp" (19.7 GB): main weights + the official MTP
+      # head (abliteration never touched it, so drafts stay output-equivalent).
+      # Q6_K-mtp (22.5 GB) was tested and does NOT leave room for long context:
+      # Q5_K_M at 262K/q8_0 KV already sits at 30.2 of 32.6 GB.
+      #
+      # ctx 480K — context priority, VERIFIED 2026-10-30: beyond the native
+      # 262,144 via Qwen's official YaRN recipe (factor 4 over 262144, rated to
+      # ~1M). llama-server caps each slot at the GGUF's n_ctx_train, so
+      # context_length is overridden to 1048576 (without it, -c 393216 silently
+      # serves 262144). KV is q4_0 to fit: 31.5 GB of 32.6 at -c 491520 with
+      # the projector loaded; -c 524288 OOMs on the compute buffer. Needle
+      # recalled at 481,173 tokens (prefill 878 t/s, ~9 min), 378,765 and
+      # 257,699. Trade-offs: q4_0 KV and static YaRN cost a little quality at
+      # every length (Qwen's caveat); for native-262K behaviour drop the YaRN
+      # flags and use -c 262144 -ctk q8_0 -ctv q8_0 (verified: needle at
+      # 257,699, 30.2 GB).
+      # SPEED: decode ~99-106 t/s short prompts (MTP depth 2 on CUDA,
+      # acceptance ~0.69-0.75), vs 28.5 qwen38-27b / 44.7 qwen38-fast on vLLM.
+      # -np 1: one sequence owns the whole KV pool (and MTP wants parallel 1).
+      # Vision + tool calls (--jinja) verified with MTP on. Sampling = Qwen3.8
+      # thinking-mode defaults (temp 1.0, top-p 0.95, top-k 20).
+      RUNTIME="llamacpp"
+      SNAPSHOT_REPO="0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF"
+      GGUF_FILE="RVN-Q5_K_M-multilingual-mtp.gguf"
+      MMPROJ_FILE="mmproj-Qwen3.8-27B-Q8_0.gguf"
+      MODEL_ARGS=(
+        -c 491520
+        -ngl 99
+        -fa on
+        -np 1
+        -ctk q4_0
+        -ctv q4_0
+        --rope-scaling yarn
+        --rope-scale 4
+        --yarn-orig-ctx 262144
+        --override-kv qwen35.context_length=int:1048576
+        --spec-type draft-mtp
         --jinja
         --temp 1.0
         --top-p 0.95

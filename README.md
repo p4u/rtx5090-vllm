@@ -336,12 +336,13 @@ Fifteen models, each filling a specific role. `make list` prints the keys,
 `make run` with no `MODEL` gives an interactive picker, and `./run.sh --help`
 dumps the full per-model rationale (the VRAM math and OOM boundaries).
 
-All but one run on the vLLM image. `bonsai2` is the exception — it needs a second
-runtime (see [Two runtimes](#two-runtimes) below).
+All but two run on the vLLM image. `bonsai2` and `qwen38-uncensored` are the
+exceptions — they run on a second runtime (see [Two runtimes](#two-runtimes) below).
 
 | key                | params        | quant      | ctx (5090) | vision | role |
 |--------------------|---------------|------------|------------|--------|------|
 | `bonsai2`          | 27B dense+vis | ternary PQ2_0 | 262K    | ✓      | ⭐ **Fastest**: ~157 t/s decode, 6.8 GB weights — runs on the llama.cpp fork, **not vLLM** |
+| `qwen38-uncensored`| 27B dense+vis | Q5_K_M+MTP | **480K**   | ✓      | Abliterated Qwen3.8 ([RVN](https://huggingface.co/0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF): 0–1/100 refusals, KL 0.0085), ~100 t/s, YaRN ×4 + q4_0 KV — llama.cpp fork |
 | `qwen38-27b`       | 27B dense     | NVFP4-dyn  | 262K       | —      | ⭐ Qwen3.8 **quality** flavor: dynamic quant, mm off (needs vLLM ≥0.28) |
 | `qwen38-fast`      | 27B dense     | NVFP4+MTP  | 262K       | —      | Qwen3.8 **speed** flavor: MTP spec decode ~44.7 t/s (1.6×), mm off (≥0.28) |
 | `qwen38-vision`    | 27B dense+vis | NVFP4      | 131K       | ✓      | Qwen3.8 **vision** flavor: image input, ctx pays for the encoder (≥0.28) |
@@ -357,7 +358,9 @@ runtime (see [Two runtimes](#two-runtimes) below).
 | `gpt-oss`          | 21B/3.6B MoE  | MXFP4      | 131K       | —      | OpenAI open weights, `Reasoning: low/med/high` |
 | `nemotron3`        | 31B/3B MoE    | NVFP4      | 224K       | —      | NVIDIA Omni reasoning MoE (mm disabled) |
 
-`ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV.
+`ctx` = verified boot + completion ceiling on a single 32 GB card with fp8 KV
+(the llama.cpp entries: q8_0/f16 KV for `bonsai2`, q4_0 for `qwen38-uncensored`,
+which also needle-tested recall at 481K tokens).
 The container tracks `vllm/vllm-openai:latest` (currently **0.32.0**: every key passed `test-all-models.sh` on it; the ctx ceilings were measured on 0.28.0). Most
 values were first confirmed on 0.22.1; the two `unsloth` NVFP4-dynamic entries
 require vLLM ≥ 0.24. The old LilaRest text-only Gemma 4 was **removed** — its
@@ -427,6 +430,7 @@ prompt. Tool calling (`--jinja`), vision, and the Qwen thinking toggle
 ### Picking one at a glance
 
 - **Fastest decode, with vision** → `bonsai2` (~157 t/s ternary 27B on llama.cpp; prefill is the trade)
+- **Uncensored, and the longest context** → `qwen38-uncensored` (abliterated Qwen3.8, 480K via YaRN, ~100 t/s with MTP; vision + tools)
 - **Best overall quality (newest Qwen)** → `qwen38-27b` (Qwen3.8 dense, dynamic NVFP4, ~28.5 t/s decode, prefill 6.3K→2.1K t/s from 38K→259K ctx)
 - **Newest Qwen, faster** → `qwen38-fast` (same model, MTP speculative decode ~44.7 t/s, standard quant)
 - **Newest Qwen with vision** → `qwen38-vision` (image input, 131K)

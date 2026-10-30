@@ -136,6 +136,14 @@ at any version: 402 of 851 tensors use ggml type id 142 (upstream ggml defines
 transform. A loader that ignores it emits fluent garbage instead of failing, so
 never "just try it" on the stock engine to check.
 
+`qwen38-uncensored` (an abliterated Qwen3.8 that ships only as GGUF) uses the
+same image for a different reason: llama.cpp's `draft-mtp` speculative
+decoding with the GGUF's embedded MTP head beats every vLLM build of it on this
+card. It runs past the native 262K via YaRN; llama-server caps each slot at the
+GGUF's `n_ctx_train`, so the `context_length` key is overridden
+(`--override-kv`). Without that, a larger `-c` is silently served as 262144,
+so check the `n_ctx_slot` log line, not just that it boots.
+
 The branch is deliberately narrow — everything the rest of the stack depends on
 is preserved rather than special-cased downstream:
 
