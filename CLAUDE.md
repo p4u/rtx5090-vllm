@@ -136,13 +136,17 @@ at any version: 402 of 851 tensors use ggml type id 142 (upstream ggml defines
 transform. A loader that ignores it emits fluent garbage instead of failing, so
 never "just try it" on the stock engine to check.
 
-`qwen38-uncensored` (an abliterated Qwen3.8 that ships only as GGUF) uses the
-same image for a different reason: llama.cpp's `draft-mtp` speculative
-decoding with the GGUF's embedded MTP head beats every vLLM build of it on this
-card. It runs past the native 262K via YaRN; llama-server caps each slot at the
+`qwen38-uncensored` and `qwen38-fable` (uncensored Qwen3.8 builds that ship
+only as GGUF) use the same image for a different reason: llama.cpp's
+`draft-mtp` speculative decoding with the GGUF's embedded MTP head beats every
+vLLM build of them on this card. They run past the native 262K via YaRN; llama-server caps each slot at the
 GGUF's `n_ctx_train`, so the `context_length` key is overridden
 (`--override-kv`). Without that, a larger `-c` is silently served as 262144,
-so check the `n_ctx_slot` log line, not just that it boots.
+so check the `n_ctx_slot` log line, not just that it boots. Both run `-np 1`
+(one slot owns the whole pool), so run.sh gives every llama.cpp launch a
+host-RAM prompt cache of 40% of MemTotal (`--cache-ram`, before `MODEL_ARGS` so
+a model or CLI value wins): a second conversation evicts the slot, and only a
+saved state avoids re-prefilling ~170K tokens (~100 s, i.e. client timeouts).
 
 The branch is deliberately narrow — everything the rest of the stack depends on
 is preserved rather than special-cased downstream:

@@ -25,6 +25,7 @@ MAX_TOKENS=2000  # enough for reasoning models
 # Format: "key|target_ctx|notes" — target_ctx matches run.sh's configured ceiling.
 ALL_MODELS=(
   "bonsai2|262144|Bonsai 2 ternary 27B PQ2_0 + vision [llama.cpp fork]"
+  "qwen38-fable|524288|DavidAU TURBO Fable Q4_K_M+MTP, YaRN x4, q4_0 KV [llama.cpp fork]"
   "qwen38-uncensored|491520|Qwen3.8 RVN abliterated Q5_K_M+MTP, YaRN x4, q4_0 KV [llama.cpp fork]"
   "qwen38-27b|262144|Qwen3.8 DeltaNet 27B NVFP4-dyn (mm off)"
   "qwen38-fast|262144|Qwen3.8 27B NVFP4+MTP spec decode (mm off)"

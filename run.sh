@@ -42,13 +42,14 @@
 # Most entries run on that vLLM image. bonsai2 is the exception: RUNTIME=llamacpp
 # launches it on a locally-built prism-ml llama.cpp fork (./build-llamacpp.sh),
 # the only engine that can execute its ternary tensors — see its case block.
-# qwen38-uncensored rides the same fork image (plain GGUF + embedded MTP head:
-# llama.cpp's draft-mtp beats every vLLM build of it on this card).
+# qwen38-uncensored and qwen38-fable ride the same fork image (plain GGUF +
+# embedded MTP head: llama.cpp's draft-mtp beats every vLLM build on this card).
 #
 #   model              params         quant         ctx     tool-parser   notes
 #   ─────────────────  ─────────────  ────────────  ──────  ────────────  ─────────────────
 #   bonsai2            27B dense+vis  ternary PQ2_0 262K    jinja         ⭐ FASTEST: ~157 t/s, 6.8 GB weights [llama.cpp fork, NOT vLLM]
 #   qwen38-uncensored  27B dense+vis  Q5_K_M+MTP    480K    jinja         Qwen3.8 abliterated (RVN), ~100 t/s, YaRN x4 + q4_0 KV [llama.cpp fork]
+#   qwen38-fable       27B dense+vis  Q4_K_M+MTP    512K    jinja         DavidAU TURBO Fable fine-tune, uncensored, short thinking, ~109 t/s [llama.cpp fork]
 #   qwen38-27b         27B dense      NVFP4-dyn     262K    qwen3_xml     ⭐ Qwen3.8 QUALITY flavor (mm off) [needs vLLM>=0.28]
 #   qwen38-fast        27B dense      NVFP4+MTP     262K    qwen3_xml     Qwen3.8 SPEED flavor, ~44.7 t/s spec decode (mm off) [>=0.28]
 #   qwen38-vision      27B dense+vis  NVFP4         131K    qwen3_xml     Qwen3.8 VISION flavor, image input [>=0.28]
@@ -69,6 +70,7 @@
 # ─── Picking one at a glance ────────────────────────────────────────────────
 #   Fastest decode, and vision too?         → bonsai2        (~157 t/s ternary 27B, llama.cpp)
 #   Uncensored, longest context (480K)?     → qwen38-uncensored (abliterated Qwen3.8, MTP, llama.cpp)
+#   Uncensored coder, short thinking, 512K? → qwen38-fable   (DavidAU fine-tune, MTP, llama.cpp)
 #   Best overall quality (newest Qwen)?     → qwen38-27b     (Qwen3.8 dense, dynamic NVFP4)
 #   Newest Qwen but faster (some quality)?  → qwen38-fast    (MTP spec decode, ~1.6x)
 #   Newest Qwen with vision?                → qwen38-vision  (image input, 131K)
@@ -190,7 +192,7 @@ HOST_IP="${HOST_IP:-0.0.0.0}"
 SERVED_ALIASES=(
   default
   # This file's model keys:
-  bonsai2 qwen38-uncensored qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
+  bonsai2 qwen38-uncensored qwen38-fable qwen38-27b qwen38-fast qwen38-vision qwen36 qwen36-fast qwen36-27b-nvfp4 qwen36-27b-awq qwen36-27b-unsloth qwen3-coder cascade2 gemma4 gemma4-vision gpt-oss nemotron3
   # Generic placeholders common OpenAI clients / agents default to. vLLM is
   # strict about the `model` field, so alias them to whatever is loaded.
   llama llama2 llama3 llama-3 chat model assistant local
@@ -222,6 +224,7 @@ usage() {
 # Order here doubles as the "1-N" numbering shown to the user.
 MODELS=(
   "bonsai2|27B dense ternary PQ2_0 (prism-ml), 262K, vision — ⭐ FASTEST 27B: ~157 t/s, 6.8 GB weights [llama.cpp fork, not vLLM]"
+  "qwen38-fable|27B dense Q4_K_M+MTP DavidAU TURBO Fable Cold Fusion (heretic fine-tune), 512K, vision — uncensored coder, short thinking, ~109 t/s [llama.cpp fork]"
   "qwen38-uncensored|27B dense Q5_K_M+MTP abliterated (0bserverx RVN), 480K, vision — uncensored Qwen3.8, ~100 t/s [llama.cpp fork]"
   "qwen38-27b|27B dense NVFP4-dynamic (unsloth), 262K — ⭐ NEWEST: Qwen3.8 QUALITY flavor, mm off (needs vLLM>=0.28)"
   "qwen38-fast|27B dense NVFP4+MTP (sakamakismile), 262K — Qwen3.8 SPEED flavor: MTP spec decode, mm off (needs vLLM>=0.28)"
@@ -470,6 +473,54 @@ select_model() {
         --spec-type draft-mtp
         --jinja
         --temp 1.0
+        --top-p 0.95
+        --top-k 20
+      )
+      ;;
+    qwen38-fable)
+      # DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-
+      # NEO-CODER-MAX-MTP-GGUF: a FINE-TUNE, not a plain abliteration. Qwen3.8-
+      # 27B merged/tuned with DavidAU's "Cold Fusion" + Fable Fusion 711 recipes
+      # (Fable/Opus/GPT-5 reasoning traces), Heretic-ARA'd at both ends.
+      # Publisher's numbers: refusals 11/100 (stage-2 KL 0.0025), ARC-C 0.735 /
+      # ARC-E 0.882 (mxfp8), and "TURBO" = thinking blocks 1/2 to 1/10 the size
+      # of stock Qwen3.8. Compare qwen38-uncensored (RVN: 0-1/100, KL 0.0085, no
+      # tuning) — this one trades some uncensoring for the tune.
+      #
+      # Q4_K_M "NEO-CODER-MAX" MTP (18.5 GB; NEO dual imatrix, output/embed kept
+      # higher, MTP head Q8_0) + mmproj-F16 (0.93 GB). The publisher's floor is
+      # Q4_K_M; Q5_K_M-MTP (21.2 GB) was tested too but tops out ~400K
+      # (30.9 GB at -c 393216), so context priority picked Q4_K_M.
+      #
+      # ctx 512K, VERIFIED 2026-11-01: YaRN x4 over the native 262144 + q4_0
+      # KV + the n_ctx_train override (see qwen38-uncensored for why each is
+      # needed). -c 524288 = 31.7 GB of 32.6 with the projector loaded — the
+      # ceiling (+32K ≈ +0.75 GB would not fit). Needle
+      # recalled at 512,219 tokens (prefill 842 t/s, ~10 min).
+      # SPEED: decode ~109 t/s short prompts, MTP acceptance 0.88-0.95 (the tune
+      # writes predictable text). Vision + tool calls (--jinja) verified with
+      # MTP on. temp 0.6: the publisher's setting for this coder build and
+      # for MTP (higher temps cut acceptance); rep-pen stays off. Its embedded
+      # template also takes chat_template_kwargs reasoning_effort
+      # (xhigh default | medium | low).
+      RUNTIME="llamacpp"
+      SNAPSHOT_REPO="DavidAU/Qwen3.8-27B-TURBO-Fable-Cold-Fusion-735-882-Heretic-Uncensored-NEO-CODER-MAX-MTP-GGUF"
+      GGUF_FILE="Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-MTP-Q4_K_M.gguf"
+      MMPROJ_FILE="mmproj-F16.gguf"
+      MODEL_ARGS=(
+        -c 524288
+        -ngl 99
+        -fa on
+        -np 1
+        -ctk q4_0
+        -ctv q4_0
+        --rope-scaling yarn
+        --rope-scale 4
+        --yarn-orig-ctx 262144
+        --override-kv qwen35.context_length=int:1048576
+        --spec-type draft-mtp
+        --jinja
+        --temp 0.6
         --top-p 0.95
         --top-k 20
       )
@@ -1043,6 +1094,15 @@ if [[ "$RUNTIME" == "llamacpp" ]]; then
     --metrics
   )
   [[ -n "$MMPROJ_FILE" ]] && LLAMACPP_ARGS+=(--mmproj "$MMPROJ_CONTAINER")
+  # Host-RAM prompt cache, sized to this machine (40% of RAM) instead of
+  # llama-server's 8 GiB default. With -np 1 a second conversation (an agent's
+  # subagent, another user) evicts the slot, and on these hybrid DeltaNet models
+  # the only way back is a saved state: one 173K-token conversation is a ~5 GB
+  # entry, so 8 GiB holds one and every switch re-prefilled ~170K tokens
+  # (~100 s — seen 2026-11-01 as client timeouts). Placed before MODEL_ARGS so
+  # a model block or CLI --cache-ram still wins (llama-server is last-wins).
+  mem_mib=$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+  (( mem_mib > 0 )) && LLAMACPP_ARGS+=(--cache-ram "$(( mem_mib * 40 / 100 ))")
   # COMMON_ARGS is vLLM-only and deliberately NOT passed here.
   mapfile -t USER_ARGS < <(translate_vllm_args "$@")
   echo ">>> cli args    : ${MODEL_ARGS[*]} ${USER_ARGS[*]}"

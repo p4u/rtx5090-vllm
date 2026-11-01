@@ -50,6 +50,26 @@
           }
         },
         {
+          "id": "qwen38-fable",
+          "name": "Qwen3.8 27B DavidAU TURBO Fable Cold Fusion Q4_K_M+MTP (llama.cpp fork) — 512K (YaRN), uncensored coder, short thinking, ~109 t/s, vision + tools",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 524288,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template"
+          }
+        },
+        {
           "id": "qwen38-27b",
           "name": "Qwen3.8 27B NVFP4-dynamic unsloth (vLLM) — 262K, ⭐ NEWEST, quality-first, text-only (mm disabled)",
           "reasoning": true,

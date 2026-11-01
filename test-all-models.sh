@@ -27,6 +27,7 @@ PROMPT="Reply with exactly one sentence confirming you are working."
 ALL_MODELS=(
   bonsai2
   qwen38-uncensored
+  qwen38-fable
   qwen38-27b
   qwen38-fast
   qwen38-vision

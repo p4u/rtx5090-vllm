@@ -28,6 +28,7 @@ DEFAULT_REPOS=(
   #   ./download-model.sh prism-ml/Ternary-Bonsai-2-27B-gguf "*mmproj-Q8_0.gguf"
   # qwen38-uncensored likewise (that repo holds ~1.6 TB of quants) — run.sh
   # fetches just RVN-Q5_K_M-multilingual-mtp.gguf + mmproj-Qwen3.8-27B-Q8_0.gguf.
+  # Same for qwen38-fable (DavidAU repo): one Q4_K_M MTP GGUF + mmproj-F16.gguf.
   "unsloth/Qwen3.8-27B-NVFP4"                              # qwen38-27b (quality flavor)
   "sakamakismile/Qwen3.8-27B-MTP-NVFP4"                    # qwen38-fast (speed flavor)
   "Inferact/Qwen3.8-27B-NVFP4"                             # qwen38-vision (vision flavor)
